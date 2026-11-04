@@ -1,0 +1,150 @@
+# tbrowser
+
+A minimal Chromium browser: one window, one page, one command bar at the bottom
+opened with a keybind. Chrome extensions and DevTools work, so keys are handled by
+[Vimium](#extensions) and `F12` opens DevTools.
+
+Runs on Windows (primary target), Linux and macOS via Electron.
+
+## Why Electron
+
+The requirement is real Chrome extensions plus DevTools. Tauri/WebView2 can load
+unpacked extensions but does not implement `chrome.tabs`, `chrome.windows` or
+`chrome.commands`, has no extension UI, and does not enable `declarativeNetRequest`
+rule sets — Vimium and uBlock Lite do not work there. Electron ships full Chromium,
+so the extension API surface is large enough for Vimium, at the cost of ~100 MB.
+
+That same gap is why the adblocker is built in instead of being a Chrome extension:
+Electron has no working `declarativeNetRequest`, and Manifest V2 blocking
+extensions no longer load. See [Adblock](#adblock).
+
+## Run on Windows
+
+Requires Node.js 20+.
+
+```powershell
+npm install
+npm start
+```
+
+Package a standalone executable:
+
+```powershell
+npm run pack:win
+# dist/tbrowser-win32-x64/tbrowser.exe
+```
+
+`npm install` must run on the platform you launch from; the Electron binary is
+platform-specific. WSL users: run these commands from Windows, or package with
+`npm run pack:win` and launch the `.exe`.
+
+## Keys
+
+| Key | Action |
+| --- | --- |
+| `:` | open the command bar (vim style; only when it is closed) |
+| `Ctrl+L`, `Ctrl+K` | open/focus the command bar |
+| `Esc` | close the command bar |
+| `Enter` | open what you typed |
+| `Ctrl+R`, `F5` | reload |
+| `Alt+Left` / `Alt+Right` | back / forward |
+| `F12`, `Ctrl+Shift+I` | DevTools |
+| `Ctrl+Shift+W` | close window |
+| `Ctrl+Q` | quit |
+
+Vimium handles everything else inside the page (`f`, `j`, `o`, `?`, ...).
+
+Everything is rebindable in `config.json` (created on first run):
+
+- Windows: `%APPDATA%\tbrowser\config.json`
+- Linux: `~/.config/tbrowser/config.json`
+- macOS: `~/Library/Application Support/tbrowser/config.json`
+
+```json
+{
+  "searchUrl": "https://duckduckgo.com/?q=",
+  "adblock": true,
+  "keybindings": {
+    "openBar": ["ctrl+l", "ctrl+k", ":"],
+    "closeBar": ["escape"],
+    "reload": ["ctrl+r", "f5"],
+    "back": ["alt+left"],
+    "forward": ["alt+right"],
+    "devtools": ["f12", "ctrl+shift+i"],
+    "closeWindow": ["ctrl+shift+w"],
+    "quit": ["ctrl+q"]
+  }
+}
+```
+
+Accelerators are `modifier+...+key` with `ctrl`, `alt`, `shift`, `meta`. Keys
+include `a`-`z`, `0`-`9`, `left`, `right`, `up`, `down`, `escape`, `enter`,
+`space`, `f1`-`f12`, and punctuation.
+
+## Command bar
+
+- `https://…`, `http://…`, `file:///…`, `about:blank` — opened as-is
+- `example.com` — gets `https://`
+- `localhost:3000`, `192.168.1.1:8080`, `example.com:8080` — gets `http://` (non-443 port or local/IP host)
+- anything else — search via `searchUrl`
+
+Single view, no tabs: `target=_blank` links open in the same page.
+
+## Extensions
+
+Three directories are scanned at startup; each subfolder with a `manifest.json`
+is loaded unpacked:
+
+- `extensions/` — next to the app (source checkouts)
+- `vendor/` — bundled Vimium fork
+- `%APPDATA%\tbrowser\extensions` (Linux: `~/.config/tbrowser/extensions`) —
+  use this for a packaged install, where the app directory may be read-only
+
+```powershell
+# Chrome Web Store URL, 32-char extension id, .crx/.zip URL, or local file
+npm run add-ext -- https://chromewebstore.google.com/detail/<slug>/<id>
+npm run add-ext -- <extension-id>
+```
+
+For a packaged install, extract the folder into the user extensions directory
+instead (the installer writes to `extensions/` next to the app).
+
+### Vimium
+
+`vendor/vimium` is Vimium 2.4.2 with a compatibility shim
+(`background_scripts/tbrowser-compat.js`, plus `lib/tbrowser-compat.js` for content scripts) because Electron lacks
+`chrome.webNavigation`, `chrome.windows`, `chrome.commands`, `chrome.history`,
+`chrome.bookmarks`, `chrome.sessions`, `chrome.notifications` and `chrome.search`.
+The shim stubs those APIs so the MV3 service worker boots; content-script features
+(hints, scrolling, find, marks, omnibar, copy URL) work. Tab-management commands
+(`x`, `T`, `g$`, ...) are limited because Electron has no tab management.
+
+Vimium C crashes the same way (`chrome.windows.onFocusChanged`); if you want it,
+apply the same shim to its manifest's `background.service_worker`.
+
+### uBlock Origin
+
+Does not work: Electron exposes `chrome.declarativeNetRequest` but never enables
+rule sets (`getEnabledRulesets()` returns `[]`; requests are not filtered).
+
+## Adblock
+
+Built in via [`@ghostery/adblocker-electron`](https://github.com/ghostery/adblocker)
+using Easylist/uBO filter lists, applied through Electron's `webRequest`. Filters
+are cached in `adblock-engine.bin` under the user-data directory; the first run
+needs network access. Set `"adblock": false` in `config.json` to disable.
+
+## Development
+
+```bash
+npm test          # command parsing + keybinding matcher
+npm start         # run from source (dev)
+```
+
+Layout:
+
+- `main.js` — window, page view, command-bar view, key routing, state
+- `lib/` — command parsing, keybinding matcher/config, extension loading, adblock
+- `ui/` — command-bar page + preload
+- `scripts/install-extension.mjs` — CRX/zip unpacker for `extensions/`
+- `vendor/vimium` — patched Vimium fork

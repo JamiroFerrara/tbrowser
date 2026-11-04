@@ -1,0 +1,24 @@
+{
+  "name": "tbrowser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal Chromium browser: one page, one command bar, real Chrome extensions.",
+  "main": "main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/commands.test.js test/config.test.js",
+    "add-ext": "node scripts/install-extension.mjs",
+    "pack:win": "electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\""
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "^45.0.0",
+    "fflate": "^0.8.2"
+  },
+  "dependencies": {
+    "@ghostery/adblocker-electron": "^2.20.3"
+  }
+}

@@ -1,0 +1,4 @@
+node_modules/
+dist/
+extensions/*
+!extensions/.gitkeep
