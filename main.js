@@ -70,6 +70,7 @@ let extensionDirs = [];
 let sessionReady = null;
 let creatingWindow = null;
 let controlServer = null;
+let showRequestWatcher = null;
 
 // The config file is the only source of truth: `configSnapshot` is the text
 // this process last wrote or read, so a watcher event that merely echoes our
@@ -840,6 +841,38 @@ function createWindow(snapshot = {}) {
 }
 
 /**
+ * A file a hotkey can drop to ask for a window. AutoHotkey and shell scripts
+ * can write a file faster and more portably than they can open a pipe, and
+ * the watch costs nothing while it waits.
+ */
+function showRequestPath() {
+  return path.join(app.getPath('userData'), 'show.request');
+}
+
+function startShowRequestWatch() {
+  if (showRequestWatcher) return;
+  const file = showRequestPath();
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    // nothing left over
+  }
+  try {
+    showRequestWatcher = fs.watch(app.getPath('userData'), (_event, name) => {
+      if (name !== 'show.request') return;
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        // already consumed
+      }
+      showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+    });
+  } catch (err) {
+    console.warn(`[tbrowser] cannot watch for show requests: ${err.message}`);
+  }
+}
+
+/**
  * A local channel the launcher can talk to. Booting Electron just to hand a
  * "show" message to an already-running process costs seconds on Windows; a
  * pipe write costs nothing, so a cold process is only paid for once.
@@ -875,6 +908,7 @@ function startControlServer() {
     controlServer = null;
   });
   controlServer.listen(target);
+  startShowRequestWatch();
   app.on('quit', () => {
     if (process.platform !== 'win32') {
       try {
@@ -1170,7 +1204,9 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    // A hidden launch only wants the daemon up; it must not pop a window.
+    if (argv.includes('--hidden') || argv.includes('--daemon')) return;
     showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
   });
 
@@ -1188,6 +1224,9 @@ if (!gotLock) {
     keys = compileKeybindings(config.keybindings);
     visited = new Visits(app.getPath('userData'));
     startConfigWatch();
+    // `--hidden` starts the resident process without a window: run at login so
+    // every later launch is a request to an already warm browser.
+    if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
     return showWindow();
   });
 }
