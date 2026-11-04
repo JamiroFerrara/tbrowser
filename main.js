@@ -591,6 +591,7 @@ class Browser {
   setSidebar(visible) {
     if (visible === this.sidebarVisible) return;
     this.sidebarVisible = visible;
+    this.pageLayouts = 0;
     if (visible) {
       const view = this.ensureSidebar();
       if (!this.sidebarAttached) {
@@ -604,14 +605,16 @@ class Browser {
       this.layout();
     }
     this.animateSidebar(visible ? 0 : -SIDEBAR_WIDTH, () => {
-      if (visible) return;
-      this.sidebarWidth = 0;
-      this.layout();
-      if (this.sidebarAttached) {
-        this.win.contentView.removeChildView(this.sidebar);
-        this.sidebarAttached = false;
+      if (!visible) {
+        this.sidebarWidth = 0;
         this.layout();
+        if (this.sidebarAttached) {
+          this.win.contentView.removeChildView(this.sidebar);
+          this.sidebarAttached = false;
+          this.layout();
+        }
       }
+      mark(`sidebar ${visible ? 'in' : 'out'}: ${this.pageLayouts} page layout(s)`);
     });
     this.persistTabs();
   }
@@ -626,7 +629,6 @@ class Browser {
     clearInterval(this.sidebarTimer);
     this.sidebarTimer = null;
     const started = Date.now();
-    this.pageLayouts = 0;
     this.sidebarTimer = setInterval(() => {
       const t = Math.min(1, (Date.now() - started) / SIDEBAR_ANIM_MS);
       this.sidebarSlide = from + (target - from) * (1 - (1 - t) ** 3);
@@ -635,7 +637,6 @@ class Browser {
       clearInterval(this.sidebarTimer);
       this.sidebarTimer = null;
       done?.();
-      mark(`sidebar ${target === 0 ? 'in' : 'out'}: ${this.pageLayouts} page layout(s)`);
     }, 16);
   }
 
