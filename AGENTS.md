@@ -7,7 +7,8 @@ is the user-facing description — this file is how to change the thing.
 
 ## Layout
 
-- `main.js` — window, views (page, command bar, panel, sidebar), key routing, state
+- `main.js` — windows (each a `Browser` with its own tabs and views), command
+  bar, panel, sidebar, key routing, state
 - `lib/` — `commands.js` (input parsing), `config.js` (config + keybinding matcher),
   `extensions.js` (unpacked extension loading), `adblock.js`
 - `ui/` — command bar, panel and sidebar pages plus their preload scripts

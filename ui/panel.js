@@ -18,6 +18,7 @@ const ACTION_LABELS = {
   prevTab: 'Previous tab',
   toggleSidebar: 'Toggle sidebar',
   devtools: 'Developer tools',
+  newWindow: 'New window',
   closeWindow: 'Close window',
   quit: 'Quit',
 };

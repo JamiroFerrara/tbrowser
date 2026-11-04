@@ -1,7 +1,7 @@
 # tbrowser
 
-A minimal Chromium browser: one window, one page, one command bar at the bottom
-opened with a keybind. Chrome extensions and DevTools work, so keys are handled by
+A minimal Chromium browser: windows of tabs, one page at a time, one command bar
+at the bottom opened with a keybind. Chrome extensions and DevTools work, so keys are handled by
 [Vimium](#extensions) and `F12` opens DevTools.
 
 Runs on Windows (primary target), Linux and macOS via Electron.
@@ -51,6 +51,7 @@ platform-specific. WSL users: run these commands from Windows, or package with
 | `Ctrl+R`, `F5` | reload |
 | `Alt+Left` / `Alt+Right` | back / forward |
 | `F12`, `Ctrl+Shift+I` | DevTools |
+| `Ctrl+N` | new window |
 | `Ctrl+Shift+W` | close window |
 | `Ctrl+Q` | quit |
 
@@ -74,6 +75,7 @@ Everything is rebindable in `config.json` (created on first run):
     "back": ["alt+left"],
     "forward": ["alt+right"],
     "devtools": ["f12", "ctrl+shift+i"],
+    "newWindow": ["ctrl+n"],
     "closeWindow": ["ctrl+shift+w"],
     "quit": ["ctrl+q"]
   }
@@ -181,6 +183,11 @@ cold start.
   true`, the default). The next `npm start` hands off to that process and
   builds a window from the warm session. Set `"resident": false` to quit with
   the last window as a normal app does.
+- `Ctrl+N` reuses the running process: the session, extensions and blocking are
+  already warm, so a new window paints before it has loaded anything and is
+  usable in about a tenth of a second. Every window keeps its own tabs, its own
+  sidebar and its own bounds; closing one leaves the others alone, and closing
+  the last still parks the process.
 - A restored tab is a record, not a renderer: its view is created the first
   time you switch to it, so ten saved tabs start one renderer, not ten.
 - The panel is warmed in the background after the window is up, so the first
@@ -203,7 +210,7 @@ npm start         # run from source (dev)
 
 Layout:
 
-- `main.js` — window, page view, command-bar view, key routing, state
+- `main.js` — windows and their views, key routing, state
 - `lib/` — command parsing, keybinding matcher/config, extension loading, adblock
 - `ui/` — command-bar page + preload
 - `scripts/install-extension.mjs` — CRX/zip unpacker for `extensions/`
