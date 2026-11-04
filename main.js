@@ -140,6 +140,39 @@ function track(window, view) {
   view.webContents.once('destroyed', () => viewOwners.delete(id));
 }
 
+/**
+ * The bar, the panel and the sidebar do not depend on a window: they are built
+ * once and moved to the next window when one closes. Reopening therefore shows
+ * the chrome instantly — no renderer has to start. A second window open at the
+ * same time gets its own copy, because a view can only live in one window.
+ */
+const freeChrome = { bar: [], sidebar: [], panel: [] };
+
+function watchViewKeys(webContents) {
+  webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+    const owner = viewOwners.get(webContents.id);
+    if (owner && owner.pressShortcut(input)) event.preventDefault();
+  });
+}
+
+function chromeView(kind, file, preload) {
+  const free = freeChrome[kind];
+  if (free.length) return free.pop();
+  const view = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'ui', preload),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+    },
+  });
+  view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  watchViewKeys(view.webContents);
+  return { view, ready: view.webContents.loadFile(path.join(__dirname, 'ui', file)) };
+}
+
 class Browser {
   constructor(snapshot = {}) {
     this.id = nextWindowId++;
@@ -202,6 +235,7 @@ class Browser {
     win.on('close', () => {
       this.finalSnapshot = this.snapshot();
       this.persistTabsNow();
+      this.detachChrome();
     });
     win.on('closed', () => this.release());
 
@@ -223,23 +257,16 @@ class Browser {
     await prepareSession();
     mark('session ready');
 
-    const bar = new WebContentsView({
-      webPreferences: {
-        preload: path.join(__dirname, 'ui', 'preload.js'),
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-        spellcheck: false,
-      },
-    });
+    const barEntry = chromeView('bar', 'index.html', 'preload.js');
+    const bar = barEntry.view;
     this.bar = bar;
+    this.barEntry = barEntry;
     track(this, bar);
-    bar.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    this.watchKeys(bar.webContents);
     // The bar, the sidebar and the page are three renderer processes. Starting
     // them together costs the slowest one instead of their sum, which on
     // Windows is the difference between an instant page and a stalled one.
-    const barReady = bar.webContents.loadFile(path.join(__dirname, 'ui', 'index.html')).then(() => {
+    const barReady = barEntry.ready.then(() => {
+      mark('bar ready');
       this.barLoaded = true;
       const pending = this.pendingBar;
       this.pendingBar = null;
@@ -283,16 +310,44 @@ class Browser {
     });
   }
 
+  /**
+   * Take the chrome views out of the window before it is destroyed, and park
+   * them for the next one. Their renderers keep running, so the next window
+   * shows a bar and a sidebar that are already painted.
+   */
+  detachChrome() {
+    if (!this.win) return;
+    const entries = [
+      ['bar', this.barEntry, this.barVisible],
+      ['panel', this.panelEntry, this.panelVisible],
+      ['sidebar', this.sidebarEntry, this.sidebarAttached],
+    ];
+    for (const [kind, entry, attached] of entries) {
+      if (!entry || !entry.view) continue;
+      if (attached) {
+        try {
+          this.win.contentView.removeChildView(entry.view);
+        } catch {
+          // the window is already going away
+        }
+      }
+      const free = freeChrome[kind];
+      if (free.length < 1) free.push(entry);
+    }
+  }
+
   release() {
     for (const tab of this.tabs.values()) tab.view?.webContents.close();
     this.tabs.clear();
     this.activeTabId = null;
-    for (const view of [this.bar, this.panel, this.sidebar]) view?.webContents.close();
     clearInterval(this.sidebarTimer);
     clearTimeout(this.persistTimer);
     this.bar = undefined;
+    this.barEntry = undefined;
     this.panel = undefined;
+    this.panelEntry = undefined;
     this.sidebar = undefined;
+    this.sidebarEntry = undefined;
     this.barVisible = false;
     this.panelVisible = false;
     this.currentPanel = null;
@@ -520,6 +575,7 @@ class Browser {
       },
     });
     tab.view = view;
+    track(this, view);
     this.wireTab(tab);
     view.webContents.loadURL(tab.url || HOME).catch(() => {});
     return view;
@@ -720,53 +776,32 @@ class Browser {
   }
 
   watchKeys(webContents) {
-    webContents.on('before-input-event', (event, input) => {
-      if (input.type !== 'keyDown' || input.isAutoRepeat) return;
-      if (this.pressShortcut(input)) event.preventDefault();
-    });
+    watchViewKeys(webContents);
   }
 
   // ------------------------------------------------------------------ panel
 
   ensurePanel() {
     if (this.panel) return this.panel;
-    const panel = new WebContentsView({
-      webPreferences: {
-        preload: path.join(__dirname, 'ui', 'panel-preload.js'),
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-        spellcheck: false,
-      },
-    });
-    this.panel = panel;
-    track(this, panel);
-    panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    this.watchKeys(panel.webContents);
-    this.panelReady = panel.webContents.loadFile(path.join(__dirname, 'ui', 'panel.html'));
-    return panel;
+    const entry = chromeView('panel', 'panel.html', 'panel-preload.js');
+    this.panelEntry = entry;
+    this.panel = entry.view;
+    track(this, this.panel);
+    this.panelReady = entry.ready;
+    return this.panel;
   }
 
   ensureSidebar() {
     if (this.sidebar) return this.sidebar;
-    const sidebar = new WebContentsView({
-      webPreferences: {
-        preload: path.join(__dirname, 'ui', 'sidebar-preload.js'),
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-        spellcheck: false,
-      },
-    });
-    this.sidebar = sidebar;
-    track(this, sidebar);
-    sidebar.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    this.watchKeys(sidebar.webContents);
-    this.sidebarReady = sidebar.webContents.loadFile(path.join(__dirname, 'ui', 'sidebar.html')).then(() => {
+    const entry = chromeView('sidebar', 'sidebar.html', 'sidebar-preload.js');
+    this.sidebarEntry = entry;
+    this.sidebar = entry.view;
+    track(this, this.sidebar);
+    this.sidebarReady = entry.ready.then(() => {
       this.sidebarLoaded = true;
-      this.updateSidebar();
+      if (this.win) this.updateSidebar();
     });
-    return sidebar;
+    return this.sidebar;
   }
 
   async openPanel(page) {
