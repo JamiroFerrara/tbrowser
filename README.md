@@ -134,6 +134,19 @@ using Easylist/uBO filter lists, applied through Electron's `webRequest`. Filter
 are cached in `adblock-engine.bin` under the user-data directory; the first run
 needs network access. Set `"adblock": false` in `config.json` to disable.
 
+## Speed
+
+Only the active page costs a process.
+
+- A restored tab is a record, not a renderer: its view is created the first
+  time you switch to it, so ten saved tabs start one renderer, not ten.
+- `:extensions` and `:settings` load their page the first time one is opened.
+- Tab state is written at most every 250 ms instead of synchronously on every
+  navigation, and flushed when the window closes.
+- Keybindings are parsed once at startup, not on every keystroke.
+- Extensions and the adblock engine load concurrently, so startup costs the
+  slower of the two rather than their sum.
+
 ## Development
 
 ```bash

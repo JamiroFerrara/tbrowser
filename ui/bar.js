@@ -2,8 +2,13 @@
 
 const input = document.getElementById('q');
 const hint = document.getElementById('hint');
+const list = document.getElementById('list');
 const HINT = 'Enter open · Esc close';
-let errorTimer = null;
+
+let items = [];
+let selected = 0;
+let queryToken = 0;
+let hintTimer = null;
 
 function focusInput(value, command) {
   input.value = value || '';
@@ -14,28 +19,101 @@ function focusInput(value, command) {
   } else {
     input.select();
   }
+  selected = 0;
+  refresh();
 }
 
-function showError(message) {
+function setHint(message, { error = false } = {}) {
   hint.textContent = message;
-  hint.classList.add('error');
-  clearTimeout(errorTimer);
-  errorTimer = setTimeout(() => {
+  hint.classList.toggle('error', error);
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => {
     hint.textContent = HINT;
     hint.classList.remove('error');
-  }, 4000);
+  }, error ? 4000 : 2500);
+}
+
+function renderRow(item, index) {
+  const row = document.createElement('li');
+  row.setAttribute('role', 'option');
+  row.setAttribute('aria-selected', String(index === selected));
+
+  const icon = document.createElement('span');
+  icon.className = 'icon';
+  icon.textContent = item.icon;
+
+  const title = document.createElement('span');
+  title.className = 'title';
+  title.textContent = item.title;
+
+  row.append(icon, title);
+  if (item.subtitle) {
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = item.subtitle;
+    row.append(sub);
+  }
+
+  row.addEventListener('mouseenter', () => {
+    selected = index;
+    paint();
+  });
+  row.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+    submit(item.value);
+  });
+  return row;
+}
+
+function paint() {
+  [...list.children].forEach((row, index) => {
+    row.setAttribute('aria-selected', String(index === selected));
+  });
+  list.children[selected]?.scrollIntoView({ block: 'nearest' });
+}
+
+function render() {
+  list.hidden = items.length === 0;
+  list.replaceChildren(...items.map(renderRow));
+}
+
+async function refresh() {
+  const token = ++queryToken;
+  const text = input.value;
+  const rows = await window.tb.suggest(text);
+  // A slower reply for older text must not replace what is on screen now.
+  if (token !== queryToken) return;
+  items = Array.isArray(rows) ? rows : [];
+  if (selected >= items.length) selected = Math.max(0, items.length - 1);
+  render();
+}
+
+function submit(value) {
+  const text = String(value ?? input.value).trim();
+  if (text) window.tb.submit(text);
 }
 
 window.tb.onEdit(focusInput);
-window.tb.onError(showError);
+window.tb.onError((message) => setHint(message, { error: true }));
+window.tb.onNotice((message) => setHint(message));
+
+input.addEventListener('input', refresh);
 
 input.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    const value = input.value.trim();
-    if (value) window.tb.submit(value);
+    const picked = items[selected];
+    submit(picked ? picked.value : input.value);
   } else if (event.key === 'Escape') {
     event.preventDefault();
     window.tb.hide();
+  } else if (event.key === 'ArrowDown' && items.length) {
+    event.preventDefault();
+    selected = (selected + 1) % items.length;
+    paint();
+  } else if (event.key === 'ArrowUp' && items.length) {
+    event.preventDefault();
+    selected = (selected - 1 + items.length) % items.length;
+    paint();
   }
 });

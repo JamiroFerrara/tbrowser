@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/commands.test.js test/config.test.js",
+    "test": "node --test test/*.test.js",
     "add-ext": "node scripts/install-extension.mjs",
     "pack:win": "electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\""
   },
