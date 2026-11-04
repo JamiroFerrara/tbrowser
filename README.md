@@ -42,10 +42,12 @@ platform-specific. WSL users: run these commands from Windows, or package with
 
 | Key | Action |
 | --- | --- |
-| `:` | open the command bar (vim style; only when it is closed) |
-| `Ctrl+L`, `Ctrl+K` | open/focus the command bar |
+| `Ctrl+P` | search: open the bar prefilled with `:s ` |
+| `:` | vim's command line, prefilled with `:s ` too |
+| `Ctrl+L`, `Ctrl+K` | open/focus the command bar with the current address |
 | `Esc` | close the command bar |
-| `Enter` | open what you typed |
+| `Enter` | open what you typed, or the highlighted suggestion |
+| `↑` / `↓` | move through the suggestions |
 | `Ctrl+R`, `F5` | reload |
 | `Alt+Left` / `Alt+Right` | back / forward |
 | `F12`, `Ctrl+Shift+I` | DevTools |
@@ -66,6 +68,7 @@ Everything is rebindable in `config.json` (created on first run):
   "adblock": true,
   "keybindings": {
     "openBar": ["ctrl+l", "ctrl+k", ":"],
+    "search": ["ctrl+p"],
     "closeBar": ["escape"],
     "reload": ["ctrl+r", "f5"],
     "back": ["alt+left"],
@@ -83,10 +86,43 @@ include `a`-`z`, `0`-`9`, `left`, `right`, `up`, `down`, `escape`, `enter`,
 
 ## Command bar
 
+`Ctrl+P` and `:` open the bar at `:s `, the search command: everything typed
+after it is the query, and `Enter` searches. `Ctrl+L`/`Ctrl+K` open it on the
+current address instead, where a leading `:` turns the input back into a
+command.
+
+While you type, a list grows up out of the bar and narrows as you type:
+
+- `🔍` the search itself, first row, submitted on `Enter`
+- `★` favourites, added and removed with `:fav`
+- `🕘` pages you have visited, ranked by frecency
+
+A bare address (`https://…`, `example.com`, `localhost:3000`) shows no list:
+it is going to be opened as typed.
+
+Ranking is the frecency shape fff.nvim uses: every visit counts 1, decays with
+a 10-day half-life, stops counting after 30 days, and a page visited very often
+grows only as the square root past ten. Favourites are floored above ordinary
+visits so they stay reachable.
+
+Visited pages and favourites are `history.json` and `favourites.json` in the
+user-data directory next to `config.json`.
+
+Input typing:
+
 - `https://…`, `http://…`, `file:///…`, `about:blank` — opened as-is
 - `example.com` — gets `https://`
 - `localhost:3000`, `192.168.1.1:8080`, `example.com:8080` — gets `http://` (non-443 port or local/IP host)
 - anything else — search via `searchUrl`
+
+Commands:
+
+| Command | Effect |
+| --- | --- |
+| `:s <query>` | search for exactly that text |
+| `:fav` | add or remove the current page from favourites |
+| `:extensions` (`:ext`) | loaded extensions and their settings pages |
+| `:settings` (`:config`) | edit `config.json` |
 
 Single view, no tabs: `target=_blank` links open in the same page.
 
