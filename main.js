@@ -2,6 +2,7 @@
 
 const { app, BaseWindow, WebContentsView, session, ipcMain, Menu, shell } = require('electron');
 const fs = require('node:fs');
+const net = require('node:net');
 const path = require('node:path');
 
 const { parseInput, parseCommand } = require('./lib/commands');
@@ -15,6 +16,7 @@ const BAR_HEIGHT = 44;
 const BAR_ROW = 32;
 const BAR_PAD = 8;
 const SIDEBAR_WIDTH = 220;
+const SIDEBAR_ANIM_MS = 160;
 const PARTITION = 'persist:tbrowser';
 const HOME = 'about:blank';
 const PERSIST_DELAY = 250;
@@ -37,6 +39,26 @@ const mark = (label) => {
 mark('main loaded');
 const URL_RE = /^(https?|file|about):/i;
 
+// A view whose bounds did not change is not worth telling the compositor
+// about: layout runs on every window resize, bar toggle and sidebar frame, and
+// re-placing the page each of those times would reflow it for nothing.
+const lastBounds = new WeakMap();
+function place(view, bounds) {
+  const prev = lastBounds.get(view);
+  if (
+    prev &&
+    prev.x === bounds.x &&
+    prev.y === bounds.y &&
+    prev.width === bounds.width &&
+    prev.height === bounds.height
+  ) {
+    return false;
+  }
+  lastBounds.set(view, bounds);
+  view.setBounds(bounds);
+  return true;
+}
+
 // Everything below is one per process: the session, the config the running
 // browser obeys, and the history every window draws on.
 let ses; // persistent session
@@ -47,6 +69,7 @@ let keys; // keybindings pre-parsed once
 let extensionDirs = [];
 let sessionReady = null;
 let creatingWindow = null;
+let controlServer = null;
 
 // The config file is the only source of truth: `configSnapshot` is the text
 // this process last wrote or read, so a watcher event that merely echoes our
@@ -147,7 +170,11 @@ class Browser {
     this.pendingBar = null;
     this.sidebarAttached = false;
     this.sidebarWidth = this.sidebarVisible ? SIDEBAR_WIDTH : 0;
+    // Where the sidebar view itself sits, in pixels from its resting place:
+    // 0 when it is fully in, -SIDEBAR_WIDTH when it is fully out.
+    this.sidebarSlide = 0;
     this.sidebarTimer = null;
+    this.pageLayouts = 0;
 
     this.persistTimer = null;
     this.finalSnapshot = null;
@@ -347,18 +374,26 @@ class Browser {
     const contentWidth = Math.max(0, width - sideWidth);
     const contentHeight = Math.max(0, height - barPixels);
 
-    // The sidebar keeps its full width and slides out of the left edge, so its
-    // contents are clipped by the window rather than reflowing every frame.
+    // The sidebar keeps its full width and travels in from the window's left
+    // edge over the page: its own contents are clipped rather than reflowed,
+    // and the page is only ever placed at the widths it settles at.
     if (this.sidebarAttached && this.sidebar) {
-      this.sidebar.setBounds({ x: sideWidth - SIDEBAR_WIDTH, y: 0, width: SIDEBAR_WIDTH, height });
+      place(this.sidebar, {
+        x: sideWidth - SIDEBAR_WIDTH + Math.round(this.sidebarSlide),
+        y: 0,
+        width: SIDEBAR_WIDTH,
+        height,
+      });
     }
     const tab = this.activeTab();
-    if (tab?.view) tab.view.setBounds({ x: sideWidth, y: 0, width: contentWidth, height: contentHeight });
+    if (tab?.view && place(tab.view, { x: sideWidth, y: 0, width: contentWidth, height: contentHeight })) {
+      this.pageLayouts += 1;
+    }
     if (this.panelVisible && this.panel) {
-      this.panel.setBounds({ x: sideWidth, y: 0, width: contentWidth, height: contentHeight });
+      place(this.panel, { x: sideWidth, y: 0, width: contentWidth, height: contentHeight });
     }
     if (this.barVisible && this.bar) {
-      this.bar.setBounds({ x: sideWidth, y: height - barPixels, width: contentWidth, height: barPixels });
+      place(this.bar, { x: sideWidth, y: height - barPixels, width: contentWidth, height: barPixels });
     }
   }
 
@@ -547,43 +582,60 @@ class Browser {
 
   // ---------------------------------------------------------------- sidebar
 
+  /**
+   * Show or hide the sidebar. The page takes its new width in one step — before
+   * it is covered on the way in, after it is uncovered on the way out — and
+   * only the sidebar view travels in between, so a toggle lays the page out
+   * once instead of once per frame.
+   */
   setSidebar(visible) {
     if (visible === this.sidebarVisible) return;
     this.sidebarVisible = visible;
     if (visible) {
       const view = this.ensureSidebar();
       if (!this.sidebarAttached) {
+        // Attached off the left edge: it slides in from there rather than
+        // appearing on a page that has not made room yet.
+        this.sidebarSlide = -SIDEBAR_WIDTH;
         this.win.contentView.addChildView(view);
         this.sidebarAttached = true;
       }
+      this.sidebarWidth = SIDEBAR_WIDTH;
+      this.layout();
     }
-    this.animateSidebar(visible ? SIDEBAR_WIDTH : 0);
-    this.persistTabs();
-  }
-
-  /**
-   * Slide the sidebar by moving the page's left edge; the sidebar view keeps its
-   * width and travels off the window edge, so its contents are clipped instead
-   * of reflowing on every frame.
-   */
-  animateSidebar(target) {
-    const from = this.sidebarWidth;
-    const started = Date.now();
-    clearInterval(this.sidebarTimer);
-    this.sidebarTimer = setInterval(() => {
-      const t = Math.min(1, (Date.now() - started) / SIDEBAR_ANIM_MS);
-      this.sidebarWidth = from + (target - from) * (1 - (1 - t) ** 3);
+    this.animateSidebar(visible ? 0 : -SIDEBAR_WIDTH, () => {
+      if (visible) return;
+      this.sidebarWidth = 0;
       this.layout();
-      if (t < 1) return;
-      clearInterval(this.sidebarTimer);
-      this.sidebarTimer = null;
-      this.sidebarWidth = target;
-      this.layout();
-      if (!this.sidebarVisible && this.sidebarAttached) {
+      if (this.sidebarAttached) {
         this.win.contentView.removeChildView(this.sidebar);
         this.sidebarAttached = false;
         this.layout();
       }
+    });
+    this.persistTabs();
+  }
+
+  /**
+   * Slide the sidebar view over the page. Its width never changes and the page
+   * keeps its bounds for the whole slide, so no frame of it reflows anything:
+   * the compositor moves a rectangle it already has.
+   */
+  animateSidebar(target, done) {
+    const from = this.sidebarSlide;
+    clearInterval(this.sidebarTimer);
+    this.sidebarTimer = null;
+    const started = Date.now();
+    this.pageLayouts = 0;
+    this.sidebarTimer = setInterval(() => {
+      const t = Math.min(1, (Date.now() - started) / SIDEBAR_ANIM_MS);
+      this.sidebarSlide = from + (target - from) * (1 - (1 - t) ** 3);
+      this.layout();
+      if (t < 1) return;
+      clearInterval(this.sidebarTimer);
+      this.sidebarTimer = null;
+      done?.();
+      mark(`sidebar ${target === 0 ? 'in' : 'out'}: ${this.pageLayouts} page layout(s)`);
     }, 16);
   }
 
@@ -744,6 +796,53 @@ class Browser {
 
 function createWindow(snapshot = {}) {
   return new Browser(snapshot).open();
+}
+
+/**
+ * A local channel the launcher can talk to. Booting Electron just to hand a
+ * "show" message to an already-running process costs seconds on Windows; a
+ * pipe write costs nothing, so a cold process is only paid for once.
+ */
+function controlTarget() {
+  return process.platform === 'win32'
+    ? '\\\\.\\pipe\\tbrowser-show'
+    : path.join(app.getPath('userData'), 'show.sock');
+}
+
+function startControlServer() {
+  if (controlServer) return;
+  const target = controlTarget();
+  if (process.platform !== 'win32') {
+    try {
+      fs.unlinkSync(target); // a socket left behind by a killed process
+    } catch {
+      // nothing to remove
+    }
+  }
+  controlServer = net.createServer((socket) => {
+    socket.setEncoding('utf8');
+    socket.on('error', () => {});
+    socket.once('data', (message) => {
+      if (String(message).trim() === 'show') {
+        showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+      }
+      socket.end('ok\n');
+    });
+  });
+  controlServer.on('error', (err) => {
+    console.warn(`[tbrowser] control channel unavailable: ${err.message}`);
+    controlServer = null;
+  });
+  controlServer.listen(target);
+  app.on('quit', () => {
+    if (process.platform !== 'win32') {
+      try {
+        fs.unlinkSync(target);
+      } catch {
+        // already gone
+      }
+    }
+  });
 }
 
 /** Focus the window in front, or build the ones the last run left behind. */
@@ -1037,6 +1136,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     app.setAppUserModelId('com.tbrowser.app');
     Menu.setApplicationMenu(null);
+    startControlServer();
     configPath = path.join(app.getPath('userData'), 'config.json');
     config = loadConfig(app.getPath('userData'));
     try {
