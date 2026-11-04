@@ -190,6 +190,9 @@ cold start.
   the last still parks the process.
 - A restored tab is a record, not a renderer: its view is created the first
   time you switch to it, so ten saved tabs start one renderer, not ten.
+- The bar, the sidebar and the panel outlive the window they are shown in. A
+  reopened window gets the already-painted chrome back, so it is complete
+  about 130 ms after it appears instead of waiting for three renderers.
 - The panel is warmed in the background after the window is up, so the first
   `:extensions` is instant.
 - Tab state is written at most every 250 ms instead of synchronously on every
