@@ -198,8 +198,16 @@ cold start.
 - The adblock engine loads alongside the window and switches blocking on when
   it is ready; the first page never waits for it.
 
+Start it once and leave it running: point your launcher at
+`node scripts/show.mjs` instead of the executable. It writes one word to the
+running process and exits — 23 ms here — and that process opens a window. A
+packaged build that does not hear the pipe exits with code 1, so a launcher can
+fall back to starting the app.
+
 `TBROWSER_TIMING=1` logs where a launch spends its time (`window shown`,
-`session ready`, `page created`), relative to the main script starting.
+`session ready`, `page created`), relative to the main script starting, and
+appends the same lines to `startup.log` beside the user data — a packaged
+Windows app has no console to print to.
 
 ## Development
 
