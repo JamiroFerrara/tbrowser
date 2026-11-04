@@ -158,7 +158,11 @@ function watchViewKeys(webContents) {
 
 function chromeView(kind, file, preload) {
   const free = freeChrome[kind];
-  if (free.length) return free.pop();
+  if (free.length) {
+    mark(`chrome reused ${kind}`);
+    return free.pop();
+  }
+  mark(`chrome new ${kind}`);
   const view = new WebContentsView({
     webPreferences: {
       preload: path.join(__dirname, 'ui', preload),
@@ -332,6 +336,7 @@ class Browser {
         }
       }
       const free = freeChrome[kind];
+      mark(`chrome parked ${kind}`);
       if (free.length < 1) free.push(entry);
     }
   }
