@@ -34,6 +34,19 @@ npm run pack:win     # rewrites dist/tbrowser-win32-x64/ with the new code
 app the user launches. A change that exists only in the source tree is
 invisible to them.
 
+Close the app before packing. Windows locks `tbrowser.exe` and the DLLs it
+loaded, so `npm run pack:win` dies with `EIO: i/o error, unlink
+'dist/tbrowser-win32-x64/<dll>'` while the browser runs, and an answer to a
+`taskkill` that says the process was not found means the user closed it
+already, not that the pack may skip. If it is running and blocks the pack,
+kill it — no question asked, its tabs come back:
+
+```bash
+taskkill /IM tbrowser.exe /F
+npm run pack:win
+dist/tbrowser-win32-x64/tbrowser.exe    # relaunch on the tabs state.json holds
+```
+
 **2. Every change is committed and pushed. Never leave the tree dirty.**
 
 After a coherent change — and always before handing work back — commit and
