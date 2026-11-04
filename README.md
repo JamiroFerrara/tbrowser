@@ -172,16 +172,27 @@ needs network access. Set `"adblock": false` in `config.json` to disable.
 
 ## Speed
 
-Only the active page costs a process.
+Only the active page costs a process, and only the first launch pays for a
+cold start.
 
+- The window appears before the session, the command bar or a page exists:
+  filter lists, extensions and page loads happen while it is already visible.
+- Closing the last window parks the process instead of quitting (`"resident":
+  true`, the default). The next `npm start` hands off to that process and
+  builds a window from the warm session. Set `"resident": false` to quit with
+  the last window as a normal app does.
 - A restored tab is a record, not a renderer: its view is created the first
   time you switch to it, so ten saved tabs start one renderer, not ten.
-- `:extensions` and `:settings` load their page the first time one is opened.
+- The panel is warmed in the background after the window is up, so the first
+  `:extensions` is instant.
 - Tab state is written at most every 250 ms instead of synchronously on every
   navigation, and flushed when the window closes.
 - Keybindings are parsed once at startup, not on every keystroke.
-- Extensions and the adblock engine load concurrently, so startup costs the
-  slower of the two rather than their sum.
+- The adblock engine loads alongside the window and switches blocking on when
+  it is ready; the first page never waits for it.
+
+`TBROWSER_TIMING=1` logs where a launch spends its time (`window shown`,
+`session ready`, `page created`), relative to the main script starting.
 
 ## Development
 
