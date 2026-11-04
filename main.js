@@ -1,9 +1,10 @@
 'use strict';
 
-const { app, BaseWindow, WebContentsView, session, ipcMain, Menu, shell } = require('electron');
+const { app, BaseWindow, WebContentsView, session, ipcMain, Menu, shell, nativeTheme } = require('electron');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const { parseInput, parseCommand } = require('./lib/commands');
 const { DEFAULTS, loadConfig, normalize, compileKeybindings, matchesAny, parseBindingText } = require('./lib/config');
@@ -18,7 +19,16 @@ const BAR_PAD = 8;
 const SIDEBAR_WIDTH = 220;
 const SIDEBAR_ANIM_MS = 160;
 const PARTITION = 'persist:tbrowser';
-const HOME = 'about:blank';
+// The new-tab page is a local file, not about:blank: Chromium paints a blank
+// document white whatever the theme, so the first thing a launch showed was a
+// white window.
+const HOME = pathToFileURL(path.join(__dirname, 'ui', 'home.html')).href;
+const BLANK = 'about:blank'; // what state files written before the home page hold
+const CHROME_BG = { dark: '#1b1b1b', light: '#f5f5f5' };
+// The window and every view behind a page share one background, so the frames
+// between a window appearing and its page painting are the chrome's color
+// instead of white.
+const chromeBg = () => (nativeTheme.shouldUseDarkColors ? CHROME_BG.dark : CHROME_BG.light);
 const PERSIST_DELAY = 250;
 const CASCADE = 32; // pixels a new window steps off the one it opened over
 const START = Date.now();
@@ -157,6 +167,17 @@ function watchViewKeys(webContents) {
   });
 }
 
+/**
+ * A view paints its own background until the page inside it does. Left to the
+ * default, that gap is white: the flash every window and tab showed as it
+ * opened. Give the view the chrome's color and the gap disappears.
+ */
+function newView(webPreferences) {
+  const view = new WebContentsView({ webPreferences });
+  view.setBackgroundColor(chromeBg());
+  return view;
+}
+
 function chromeView(kind, file, preload) {
   const free = freeChrome[kind];
   if (free.length) {
@@ -164,14 +185,12 @@ function chromeView(kind, file, preload) {
     return free.pop();
   }
   mark(`chrome new ${kind}`);
-  const view = new WebContentsView({
-    webPreferences: {
-      preload: path.join(__dirname, 'ui', preload),
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      spellcheck: false,
-    },
+  const view = newView({
+    preload: path.join(__dirname, 'ui', preload),
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    spellcheck: false,
   });
   view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   watchViewKeys(view.webContents);
@@ -229,7 +248,7 @@ class Browser {
       minHeight: 240,
       show: false,
       title: 'tbrowser',
-      backgroundColor: '#1b1b1b',
+      backgroundColor: chromeBg(),
     });
     this.win = win;
     windows.add(this);
@@ -290,7 +309,11 @@ class Browser {
     }
 
     const savedTabs = Array.isArray(this.saved.tabs)
-      ? this.saved.tabs.filter((url) => typeof url === 'string' && URL_RE.test(url))
+      ? this.saved.tabs
+          .filter((url) => typeof url === 'string' && URL_RE.test(url))
+          // A state file from before the home page says about:blank; that tab
+          // is the empty one, so it opens on the home page.
+          .map((url) => (url === BLANK ? HOME : url))
       : [];
     const startUrls = savedTabs.length ? savedTabs : [HOME];
     startUrls.forEach((url, index) => this.createTab({ url, activate: index === 0 }));
@@ -545,10 +568,13 @@ class Browser {
       if (URL_RE.test(url)) this.createTab({ url });
       return { action: 'deny' };
     });
-    wc.on('page-title-updated', (event, title) => {
+    wc.on('page-title-updated', (event, pageTitle) => {
       event.preventDefault();
+      // An empty tab is not a page: without a <title> Chromium names it after
+      // the file it came from, which no window or tab list should show.
+      const title = wc.getURL() === HOME ? '' : pageTitle;
       tab.title = title;
-      if (tab.url) visited.retitle(tab.url, title);
+      if (tab.url && tab.url !== HOME) visited.retitle(tab.url, title);
       if (tab.id === this.activeTabId && this.win) {
         this.win.setTitle(title ? `${title} — tbrowser` : 'tbrowser');
       }
@@ -556,13 +582,14 @@ class Browser {
     });
     wc.on('did-navigate', (_event, url) => {
       tab.url = url;
-      visited.record(url, tab.title);
+      // The home page is the absence of a page; it is not a visit.
+      if (url !== HOME) visited.record(url, tab.title);
       if (tab.id === this.activeTabId) this.persistTabs();
     });
     wc.on('did-navigate-in-page', (_event, url, isMainFrame) => {
       if (!isMainFrame) return;
       tab.url = url;
-      visited.record(url, tab.title);
+      if (url !== HOME) visited.record(url, tab.title);
       if (tab.id === this.activeTabId) this.persistTabs();
     });
     this.watchKeys(wc);
@@ -571,14 +598,12 @@ class Browser {
   /** Create a tab's renderer on first use; a restored tab costs nothing until then. */
   tabView(tab) {
     if (tab.view) return tab.view;
-    const view = new WebContentsView({
-      webPreferences: {
-        partition: PARTITION,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-        spellcheck: false,
-      },
+    const view = newView({
+      partition: PARTITION,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
     });
     tab.view = view;
     track(this, view);
