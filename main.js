@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { parseInput, parseCommand } = require('./lib/commands');
-const { loadConfig, normalize, compileKeybindings, matchesAny } = require('./lib/config');
+const { DEFAULTS, loadConfig, normalize, compileKeybindings, matchesAny, parseBindingText } = require('./lib/config');
 const { loadExtensions } = require('./lib/extensions');
 const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
@@ -18,6 +18,10 @@ const SIDEBAR_WIDTH = 220;
 const PARTITION = 'persist:tbrowser';
 const HOME = 'about:blank';
 const PERSIST_DELAY = 250;
+const START = Date.now();
+const mark = (label) => {
+  if (process.env.TBROWSER_TIMING) console.log(`[tbrowser] ${label} +${Date.now() - START}ms`);
+};
 const URL_RE = /^(https?|file|about):/i;
 
 let win; // BaseWindow
@@ -32,6 +36,17 @@ let keys; // keybindings pre-parsed once
 let state = {};
 let extensionDirs = [];
 let persistTimer = null;
+let sessionReady = null;
+let creatingWindow = null;
+
+// The config file is the only source of truth: `configSnapshot` is the text
+// this process last wrote or read, so a watcher event that merely echoes our
+// own save applies nothing.
+let configSnapshot = '';
+let configWatcher = null;
+let configWatchTimer = null;
+let adblockBlocker = null; // built-in engine, when it is the one blocking
+let adblockExtension = false; // a blocking extension loaded, so the engine stays off
 
 const tabs = new Map();
 let activeTabId = null;
@@ -42,6 +57,9 @@ let barHeight = BAR_HEIGHT;
 let panelVisible = false;
 let panelReady = null;
 let currentPanel = null;
+// The settings page is a form: while a field has focus, a typed ":" or "ctrl+w"
+// belongs to the field, not to the shortcut table.
+let panelEditing = false;
 let sidebarVisible = true;
 let sidebarLoaded = false;
 let sidebarReady = null;
@@ -325,6 +343,7 @@ function animateSidebar(target) {
 }
 
 function pressShortcut(input) {
+  if (panelVisible && panelEditing) return false;
   if (!barVisible) {
     // Only a handful of openers; the rest of the table is matched without
     // re-parsing accelerator strings on every keystroke.
@@ -477,6 +496,7 @@ async function openPanel(page) {
 function closePanel() {
   if (!panelVisible) return;
   panelVisible = false;
+  panelEditing = false;
   win.contentView.removeChildView(panel);
   layout();
   focusContent();
@@ -514,6 +534,108 @@ function runCommand(command) {
   }
 }
 
+/**
+ * Everything a window needs from the session — extensions, the adblock engine,
+ * the persistent partition — is done once per process. Reopening a window
+ * (the resident daemon case) skips all of it.
+ */
+function prepareSession() {
+  if (sessionReady) return sessionReady;
+  sessionReady = (async () => {
+    ses = session.fromPartition(PARTITION);
+    extensionDirs = [
+      path.join(__dirname, 'extensions'),
+      path.join(__dirname, 'vendor'),
+      path.join(app.getPath('userData'), 'extensions'),
+    ];
+    fs.mkdirSync(extensionDirs[2], { recursive: true });
+    const extensions = await loadExtensions(ses, extensionDirs);
+    // uBlock Origin is vendored and does its own blocking through the same
+    // webRequest hooks; the built-in engine only stands in for it when the
+    // extension did not load.
+    adblockExtension = extensions.some((extension) => extension.name === 'uBlock Origin');
+    // A cold cache downloads and parses filter lists; the first page must not
+    // wait for that. Blocking switches on as soon as the engine is ready.
+    syncAdblock().catch((err) => console.warn(`[tbrowser] adblock start failed: ${err.message}`));
+  })();
+  return sessionReady;
+}
+
+/**
+ * The built-in adblock engine follows `config.adblock` while the browser runs:
+ * switched on it loads the cached filter lists, switched off it unhooks. A
+ * blocking extension that loaded owns the session, so the engine stays out.
+ */
+async function syncAdblock() {
+  if (!ses || adblockExtension) return;
+  if (config.adblock) {
+    if (!adblockBlocker) adblockBlocker = await enableAdblock(ses, app.getPath('userData'));
+    return;
+  }
+  if (adblockBlocker) {
+    adblockBlocker.disableBlockingInSession(ses);
+    adblockBlocker = null;
+  }
+}
+
+/** Adopt a config object everywhere it is read, live. */
+function applyConfig(next, origin) {
+  config = next;
+  keys = compileKeybindings(config.keybindings);
+  syncAdblock().catch((err) => console.warn(`[tbrowser] adblock switch failed: ${err.message}`));
+  if (panelVisible && panel && origin !== 'panel') panel.webContents.send('settings:changed', { config, origin });
+  if (origin === 'disk') bar?.webContents.send('bar:notice', 'settings reloaded from config.json');
+}
+
+/** Write the config file, and remember the text so the watcher ignores it. */
+function saveConfigFile(next) {
+  const text = `${JSON.stringify(next, null, 2)}\n`;
+  fs.writeFileSync(configPath, text);
+  configSnapshot = text;
+}
+
+/** Apply an edit made outside the browser, keeping the last good config. */
+function reloadConfigFromDisk() {
+  let text;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+  } catch {
+    return; // the file is mid-replace; the next event brings it back
+  }
+  if (text === configSnapshot) return;
+  configSnapshot = text;
+  let parsed;
+  try {
+    parsed = normalize(JSON.parse(text));
+  } catch (err) {
+    console.warn(`[tbrowser] config change ignored: ${err.message}`);
+    bar?.webContents.send('bar:error', `config.json not applied: ${err.message}`);
+    return;
+  }
+  if (JSON.stringify(parsed) === JSON.stringify(config)) return;
+  applyConfig(parsed, 'disk');
+}
+
+/**
+ * Watch the directory, not the file: an editor that saves by renaming a temp
+ * file over config.json replaces the inode, and a file watcher would stop
+ * hearing about it. Bursts of events settle into one reload.
+ */
+function startConfigWatch() {
+  if (configWatcher || !configPath) return;
+  const dir = path.dirname(configPath);
+  const name = path.basename(configPath);
+  try {
+    configWatcher = fs.watch(dir, (_event, filename) => {
+      if (filename && filename !== name) return;
+      clearTimeout(configWatchTimer);
+      configWatchTimer = setTimeout(reloadConfigFromDisk, 200);
+    });
+  } catch (err) {
+    console.warn(`[tbrowser] cannot watch ${dir}: ${err.message}`);
+  }
+}
+
 async function createWindow() {
   win = new BaseWindow({
     frame: false,
@@ -523,22 +645,40 @@ async function createWindow() {
     minHeight: 240,
     show: false,
     title: 'tbrowser',
+    backgroundColor: '#1b1b1b',
   });
   restoreBounds();
 
-  ses = session.fromPartition(PARTITION);
-  extensionDirs = [
-    path.join(__dirname, 'extensions'),
-    path.join(__dirname, 'vendor'),
-    path.join(app.getPath('userData'), 'extensions'),
-  ];
-  fs.mkdirSync(extensionDirs[2], { recursive: true });
-  // Extension loaders and the adblock engine are independent; overlap them so
-  // startup costs the slower one, not their sum.
-  await Promise.all([
-    loadExtensions(ses, extensionDirs),
-    config.adblock ? enableAdblock(ses, app.getPath('userData')) : null,
-  ]);
+  win.on('resize', layout);
+  win.on('close', () => {
+    persistTabsNow();
+    saveState({ bounds: win.getBounds() });
+  });
+  win.on('closed', () => {
+    for (const tab of tabs.values()) tab.view?.webContents.close();
+    tabs.clear();
+    activeTabId = null;
+    for (const view of [bar, panel, sidebar]) view?.webContents.close();
+    bar = undefined;
+    panel = undefined;
+    sidebar = undefined;
+    barVisible = false;
+    panelVisible = false;
+    currentPanel = null;
+    sidebarAttached = false;
+    sidebarLoaded = false;
+    panelReady = null;
+    sidebarReady = null;
+    win = undefined;
+  });
+
+  // The window is the launch: show it before the session, the bar or a page
+  // exists, so nothing on the slow path can hold the first paint.
+  win.show();
+  mark('window shown');
+
+  await prepareSession();
+  mark('session ready');
 
   bar = new WebContentsView({
     webPreferences: {
@@ -556,10 +696,14 @@ async function createWindow() {
   sidebarVisible = state.sidebar !== false;
   sidebarWidth = sidebarVisible ? SIDEBAR_WIDTH : 0;
   if (sidebarVisible) {
-    ensureSidebar();
-    await sidebarReady;
-    win.contentView.addChildView(sidebar);
-    sidebarAttached = true;
+    const view = ensureSidebar();
+    sidebarReady.then(() => {
+      if (!win) return;
+      win.contentView.addChildView(view);
+      sidebarAttached = true;
+      layout();
+      updateSidebar();
+    });
   }
 
   const savedTabs = Array.isArray(state.tabs)
@@ -572,17 +716,16 @@ async function createWindow() {
     if (ids[state.activeTab] !== undefined) activateTab(ids[state.activeTab]);
   }
 
-  win.on('resize', layout);
-  win.on('close', () => {
-    persistTabsNow();
-    saveState({ bounds: win.getBounds() });
-  });
   layout();
-
-  win.show();
   focusContent();
   updateSidebar();
+  mark('page created');
   if (!savedTabs.length) showBar();
+
+  // Warm the panel after the window is up: its first open then costs nothing.
+  setImmediate(() => {
+    if (win && !panel) ensurePanel();
+  });
 }
 
 ipcMain.on('bar:submit', (_event, text) => {
@@ -622,37 +765,64 @@ ipcMain.on('sidebar:action', (_event, action) => {
 
 ipcMain.handle('panel:get', (_event, page) => {
   if (page === 'extensions') return { extensions: listExtensions(), dirs: extensionDirs };
-  return { config, configPath, dirs: extensionDirs };
+  return { config, configPath, defaults: DEFAULTS, dirs: extensionDirs };
 });
-ipcMain.handle('panel:save-config', (_event, json) => {
+/**
+ * The settings page sends the whole form: three scalars and every keybinding
+ * as the text the user typed. Bindings are parsed here, so a row that does not
+ * parse refuses the save by name instead of being dropped on the floor.
+ */
+ipcMain.handle('settings:save', (_event, patch) => {
+  if (!patch || typeof patch !== 'object') return { ok: false, error: 'invalid settings' };
+  const keybindings = { ...config.keybindings };
+  for (const [action, text] of Object.entries(patch.keybindings ?? {})) {
+    const parsed = parseBindingText(text);
+    if (!parsed.ok) return { ok: false, error: `${action}: ${parsed.error}` };
+    keybindings[action] = parsed.list;
+  }
+  const next = normalize({ ...config, ...patch, keybindings });
   try {
-    const next = normalize(JSON.parse(json));
-    fs.writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`);
-    config = next;
-    keys = compileKeybindings(config.keybindings);
-    return { ok: true, config };
+    saveConfigFile(next);
   } catch (err) {
     return { ok: false, error: err.message };
   }
+  applyConfig(next, 'panel');
+  return { ok: true, config };
 });
 ipcMain.handle('panel:rescan', async () => {
   await loadExtensions(ses, extensionDirs);
   return { extensions: listExtensions(), dirs: extensionDirs };
 });
 ipcMain.on('panel:close', () => closePanel());
+ipcMain.on('panel:editing', (_event, editing) => {
+  panelEditing = Boolean(editing);
+});
 ipcMain.on('panel:open-path', (_event, target) => {
   if (target === configPath) shell.showItemInFolder(configPath);
   else if (extensionDirs.includes(target)) shell.openPath(target);
 });
+
+/** Focus the open window, or build one — the instant path on a warm process. */
+function showWindow() {
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+    return Promise.resolve();
+  }
+  if (!creatingWindow) {
+    creatingWindow = createWindow().finally(() => {
+      creatingWindow = null;
+    });
+  }
+  return creatingWindow;
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
   });
 
   app.whenReady().then(() => {
@@ -661,10 +831,20 @@ if (!gotLock) {
     state = readState();
     configPath = path.join(app.getPath('userData'), 'config.json');
     config = loadConfig(app.getPath('userData'));
+    try {
+      configSnapshot = fs.readFileSync(configPath, 'utf8');
+    } catch {
+      configSnapshot = '';
+    }
     keys = compileKeybindings(config.keybindings);
     visited = new Visits(app.getPath('userData'));
-    return createWindow();
+    startConfigWatch();
+    return showWindow();
   });
 }
 
-app.on('window-all-closed', () => app.quit());
+// With the default resident daemon, closing the last window parks the process
+// instead of paying Electron's cold start on the next launch.
+app.on('window-all-closed', () => {
+  if (!config?.resident) app.quit();
+});
