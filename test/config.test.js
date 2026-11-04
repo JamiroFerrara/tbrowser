@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { matches, normalize, parseAccelerator } = require('../lib/config');
+const { matches, normalize, parseAccelerator, parseBindingText } = require('../lib/config');
 
 const key = (overrides) => ({
   key: '',
@@ -52,4 +52,18 @@ test('normalize keeps defaults and rejects bad bindings', () => {
 test('normalize accepts a custom search url', () => {
   assert.equal(normalize({ searchUrl: 'https://kagi.com/search?q=' }).searchUrl, 'https://kagi.com/search?q=');
   assert.equal(normalize({ searchUrl: 42 }).searchUrl, 'https://duckduckgo.com/?q=');
+});
+
+test('binding text parses comma-separated accelerators', () => {
+  assert.deepEqual(parseBindingText('ctrl+l, ctrl+k'), { ok: true, list: ['ctrl+l', 'ctrl+k'] });
+  assert.deepEqual(parseBindingText('  F5  '), { ok: true, list: ['f5'] });
+  assert.deepEqual(parseBindingText(':'), { ok: true, list: [':'] });
+});
+
+test('binding text refuses an empty row and names what does not parse', () => {
+  assert.equal(parseBindingText('   ').ok, false);
+  assert.equal(parseBindingText('').ok, false);
+  const bad = parseBindingText('ctrl+l, bogus+x+y');
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /bogus\+x\+y/);
 });
