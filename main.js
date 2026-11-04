@@ -143,6 +143,8 @@ class Browser {
     this.sidebarVisible = snapshot.sidebar !== false;
     this.sidebarLoaded = false;
     this.sidebarReady = null;
+    this.barLoaded = false;
+    this.pendingBar = null;
     this.sidebarAttached = false;
     this.sidebarWidth = this.sidebarVisible ? SIDEBAR_WIDTH : 0;
     this.sidebarTimer = null;
@@ -207,7 +209,15 @@ class Browser {
     track(this, bar);
     bar.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     this.watchKeys(bar.webContents);
-    await bar.webContents.loadFile(path.join(__dirname, 'ui', 'index.html'));
+    // The bar, the sidebar and the page are three renderer processes. Starting
+    // them together costs the slowest one instead of their sum, which on
+    // Windows is the difference between an instant page and a stalled one.
+    const barReady = bar.webContents.loadFile(path.join(__dirname, 'ui', 'index.html')).then(() => {
+      this.barLoaded = true;
+      const pending = this.pendingBar;
+      this.pendingBar = null;
+      if (pending) this.showBar(pending);
+    });
 
     if (this.sidebarVisible) {
       const view = this.ensureSidebar();
@@ -235,7 +245,10 @@ class Browser {
     this.focusContent();
     this.updateSidebar();
     mark('page created');
-    if (!savedTabs.length) this.showBar();
+    if (!savedTabs.length) {
+      await barReady;
+      this.showBar();
+    }
 
     // Warm the panel after the window is up: its first open then costs nothing.
     setImmediate(() => {
@@ -260,6 +273,8 @@ class Browser {
     this.sidebarLoaded = false;
     this.panelReady = null;
     this.sidebarReady = null;
+    this.barLoaded = false;
+    this.pendingBar = null;
     this.win = undefined;
 
     windows.delete(this);
@@ -355,6 +370,10 @@ class Browser {
   // ------------------------------------------------------------- command bar
 
   showBar({ command = false, search = false } = {}) {
+    if (!this.barLoaded) {
+      this.pendingBar = { command, search };
+      return;
+    }
     const url = this.activeTab()?.view?.webContents.getURL();
     const value = search ? ':s ' : command ? ':' : url && url !== HOME ? url : '';
     this.barHeight = BAR_HEIGHT;
