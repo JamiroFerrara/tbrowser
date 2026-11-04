@@ -9,9 +9,9 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.js",
+    "test": "node --test",
     "add-ext": "node scripts/install-extension.mjs",
-    "pack:win": "electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\""
+    "pack:win": "electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\""
   },
   "devDependencies": {
     "@electron/packager": "^18.3.6",
