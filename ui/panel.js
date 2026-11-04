@@ -155,7 +155,7 @@ function renderSettings(data) {
   title.textContent = 'Settings';
   sub.textContent = 'Saved to the config file and applied straight away — no restart.';
 
-  const searchUrl = textInput(model.config.searchUrl, 'https://duckduckgo.com/?q=');
+  const searchUrl = textInput(model.config.searchUrl, 'https://www.google.com/search?q=');
   searchUrl.id = 'setting-search-url';
   const adblock = checkbox(model.config.adblock);
   adblock.id = 'setting-adblock';

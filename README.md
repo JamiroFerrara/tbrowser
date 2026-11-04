@@ -65,7 +65,7 @@ Everything is rebindable in `config.json` (created on first run):
 
 ```json
 {
-  "searchUrl": "https://duckduckgo.com/?q=",
+  "searchUrl": "https://www.google.com/search?q=",
   "adblock": true,
   "keybindings": {
     "openBar": ["ctrl+l", "ctrl+k", ":"],

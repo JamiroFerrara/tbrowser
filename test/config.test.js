@@ -46,12 +46,12 @@ test('normalize keeps defaults and rejects bad bindings', () => {
   assert.deepEqual(config.keybindings.openBar, ['ctrl+l']);
   assert.deepEqual(config.keybindings.reload, ['f5']);
   assert.deepEqual(config.keybindings.closeBar, ['escape']);
-  assert.equal(config.searchUrl, 'https://duckduckgo.com/?q=');
+  assert.equal(config.searchUrl, 'https://www.google.com/search?q=');
 });
 
 test('normalize accepts a custom search url', () => {
   assert.equal(normalize({ searchUrl: 'https://kagi.com/search?q=' }).searchUrl, 'https://kagi.com/search?q=');
-  assert.equal(normalize({ searchUrl: 42 }).searchUrl, 'https://duckduckgo.com/?q=');
+  assert.equal(normalize({ searchUrl: 42 }).searchUrl, 'https://www.google.com/search?q=');
 });
 
 test('binding text parses comma-separated accelerators', () => {
