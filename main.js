@@ -14,6 +14,7 @@ const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
 const { suggestions } = require('./lib/suggest');
 const { Workspaces, normalizeName, autoName, LAST: LAST_WORKSPACE } = require('./lib/workspaces');
+const { splitBounds } = require('./lib/layout');
 
 const BAR_HEIGHT = 44;
 const BAR_ROW = 32;
@@ -609,21 +610,16 @@ class Browser {
       const b = this.tabs.get(this.split.b);
       const va = a?.view;
       const vb = b?.view;
-      // `splitProgress` is the opening slide: 0 is one page, 1 is two.
-      const progress = Math.max(0, Math.min(1, this.splitProgress));
-      const gap = progress > 0 ? SPLIT_GAP : 0;
       if (va && vb) {
-        if (this.split.orientation === 'horizontal') {
-          const half = Math.round(((contentHeight - gap) * progress) / 2);
-          const top = contentHeight - gap - half;
-          if (place(va, { x: 0, y: 0, width, height: top })) this.pageLayouts += 1;
-          if (place(vb, { x: 0, y: top + gap, width, height: half })) this.pageLayouts += 1;
-        } else {
-          const half = Math.round(((width - gap) * progress) / 2);
-          const left = width - gap - half;
-          if (place(va, { x: 0, y: 0, width: left, height: contentHeight })) this.pageLayouts += 1;
-          if (place(vb, { x: left + gap, y: 0, width: half, height: contentHeight })) this.pageLayouts += 1;
-        }
+        const [first, second] = splitBounds(
+          width,
+          contentHeight,
+          this.split.orientation,
+          this.splitProgress,
+          SPLIT_GAP,
+        );
+        if (place(va, first)) this.pageLayouts += 1;
+        if (place(vb, second)) this.pageLayouts += 1;
       }
     } else if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
       this.pageLayouts += 1;
