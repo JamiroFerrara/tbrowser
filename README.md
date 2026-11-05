@@ -77,6 +77,7 @@ Everything is rebindable in `config.json` (created on first run):
   "blur": true,
   "blurOpacity": 37,
   "blurColor": "#24273a",
+  "blurMaterial": "mica",
   "keybindings": {
     "openBar": ["ctrl+l", "ctrl+k", ":"],
     "search": ["ctrl+p"],
@@ -219,13 +220,19 @@ background (`warmTab`), so `Ctrl+T` swaps in a splash that is already on screen
 and only picks a new quote. An empty tab you close goes back into that pool.
 
 On Windows 11 22H2 and up the empty tab, the command bar, the sidebar and the
-settings page are painted over the desktop blurred by the window's acrylic
-backdrop — the material a Windows Terminal window shows. `blur` turns it off,
-`blurOpacity` (0–100) says how much of `blurColor` covers the blur, and the
-defaults are the terminal's own numbers: the Catppuccin Macchiato base,
-`#24273a`, at 37%, the Debian profile's opacity. All three are in settings
-under *Look*. The blur is the window's material, so the tint can only lighten
-it: Windows paints its own wash over the desktop, and no setting removes that.
+settings page are painted over the window's blurred backdrop. `blur` turns it
+off, `blurOpacity` (0–100) says how much of `blurColor` covers the blur, and
+the defaults are the terminal's own numbers: the Catppuccin Macchiato base,
+`#24273a`, at 37%, the Debian profile's opacity. All of it is in settings
+under *Look*.
+
+`blurMaterial` picks the Windows material. `mica` (the default) is the one
+Windows keeps on a window that is not in front, so losing the focus does not
+change the picture; `acrylic` blurs what is actually behind the window instead
+of the wallpaper, but Windows drops it as soon as another window takes the
+focus, and the browser turns into a clear hole when it is not the front
+window. The tint can only lighten the material: Windows lays its own wash over
+the desktop, and no setting removes that.
 
 ## Extensions
 

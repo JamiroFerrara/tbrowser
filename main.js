@@ -278,7 +278,7 @@ function applyBlur() {
   for (const window of windows) {
     const win = window.win;
     if (!win) continue;
-    if (desktopBlur) win.setBackgroundMaterial(blurred ? 'acrylic' : 'none');
+    if (desktopBlur) win.setBackgroundMaterial(blurred ? config.blurMaterial : 'none');
     win.setBackgroundColor(blurred ? '#00000000' : chromeBg());
     for (const [kind, view] of [
       ['bar', window.bar],
@@ -550,12 +550,12 @@ class Browser {
       minHeight: 240,
       show: false,
       title: 'tbrowser',
-      // The backdrop is the window's, not a view's: ask Windows for acrylic
-      // when the setting is on, and the surfaces over it paint the tint the
-      // views are given. No `backgroundColor` beside it — an opaque one would
-      // paint over the blur.
+      // The backdrop is the window's, not a view's: ask Windows for it when
+      // the setting is on, and the surfaces over it paint the tint the views
+      // are given. No `backgroundColor` beside it — an opaque one would paint
+      // over the blur.
       ...(blurOn()
-        ? { backgroundMaterial: 'acrylic' }
+        ? { backgroundMaterial: config.blurMaterial }
         : { backgroundColor: chromeBg() }),
     });
     this.win = win;

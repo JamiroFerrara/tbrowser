@@ -348,6 +348,7 @@ function collect() {
     blur: content.querySelector('#setting-blur').checked,
     blurColor: content.querySelector('#setting-blur-color').value,
     blurOpacity: content.querySelector('#setting-blur-opacity').value,
+    blurMaterial: content.querySelector('#setting-blur-material').value,
     keybindings,
     warm,
   };
@@ -374,6 +375,8 @@ function renderSettings(data) {
   blurColor.id = 'setting-blur-color';
   const blurOpacity = textInput(String(model.config.blurOpacity), '37');
   blurOpacity.id = 'setting-blur-opacity';
+  const blurMaterial = textInput(model.config.blurMaterial, 'mica');
+  blurMaterial.id = 'setting-blur-material';
   const favourites = model.favourites ?? [];
 
   const actions = el('div', 'row');
@@ -440,6 +443,11 @@ function renderSettings(data) {
         el('span', '', 'Blur opacity'),
         blurOpacity,
         'How much of the tint covers the blur, 0–100. 0 is the bare blur, 100 is the tint alone.',
+      ),
+      field(
+        el('span', '', 'Blur material'),
+        blurMaterial,
+        'mica or acrylic. mica stays when the window is not in front; acrylic blurs what is behind the window instead of the wallpaper, but Windows removes it as soon as another window takes the focus.',
       ),
     ),
     group(
