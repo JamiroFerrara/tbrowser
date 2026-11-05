@@ -133,6 +133,15 @@ Commands:
 
 Single view, no tabs: `target=_blank` links open in the same page.
 
+## New tab
+
+An empty tab is the splash the editor shows on a bare buffer: one Matrix quote,
+picked at random from the same list, centered in the window in the editor's
+face and catppuccin blue, and nothing else.
+
+The bar is up and focused on every launch and every new tab, so the first thing
+you type is a search without reaching for a key first.
+
 ## Extensions
 
 Three directories are scanned at startup; each subfolder with a `manifest.json`
