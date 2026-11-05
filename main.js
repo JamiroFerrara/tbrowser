@@ -461,6 +461,17 @@ function tabPreferences() {
     contextIsolation: true,
     nodeIntegration: false,
     spellcheck: false,
+    // Chromium only keeps the compiled form of a script once it has seen the
+    // same one twice: the first visit to a heavy site compiles every megabyte
+    // of it from source, and so does the second. Asking for the cache on the
+    // first load is what makes the *next* visit to YouTube — the case that is
+    // repeated all day — skip that compile instead of paying it again.
+    v8CacheOptions: 'bypassHeatCheck',
+    // A page nobody is looking at is not idle work: it is a download and a
+    // boot script that has to be done before it can be shown. Left throttled,
+    // a background tab and a favourite kept warm crawl through their own
+    // timers, so the page handed over on the keystroke is still half-loaded.
+    backgroundThrottling: false,
   };
 }
 
@@ -3077,33 +3088,7 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
-    const shown = showWindow({ restore: true });
-    // TEMP MEASUREMENT HOOK
-    if (process.env.TBROWSER_MEASURE_URL) {
-      return shown.then(async () => {
-        const w = [...windows].pop();
-        const rounds = Number(process.env.TBROWSER_MEASURE_ROUNDS || 1);
-        for (let i = 0; i < rounds; i++) {
-          w.navigate(process.env.TBROWSER_MEASURE_URL);
-          const wc = w.activeTab().view.webContents;
-          await new Promise((resolve) => {
-            wc.once('did-finish-load', resolve);
-            setTimeout(resolve, 30000);
-          });
-          try {
-            const probe = await wc.executeJavaScript(
-              `JSON.stringify({paint: performance.getEntriesByType('paint').map(p => [p.name, Math.round(p.startTime)]), nav: (() => { const n = performance.getEntriesByType('navigation')[0]; return n && {ttfb: Math.round(n.responseStart), dcl: Math.round(n.domContentLoadedEventEnd), load: Math.round(n.loadEventEnd)}; })(), res: performance.getEntriesByType('resource').length})`,
-            );
-            mark(`measure round ${i + 1} ${probe}`);
-          } catch (err) {
-            mark(`measure round ${i + 1} probe failed ${err.message}`);
-          }
-          console.log(`[tbrowser] measure round ${i + 1} ${w.activeTab().view.webContents.getURL()}`);
-        }
-        mark('measure done');
-      });
-    }
-    return shown;
+    return showWindow({ restore: true });
   });
 }
 
