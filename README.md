@@ -42,12 +42,15 @@ platform-specific. WSL users: run these commands from Windows, or package with
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+P` | search: open the bar prefilled with `:s ` |
-| `:` | vim's command line, prefilled with `:s ` too |
+| `Ctrl+P` | open the command bar on an empty field |
+| `:` | vim's command line: the bar starts on `:` |
 | `Ctrl+L`, `Ctrl+K` | open/focus the command bar with the current address |
 | `Esc` | close the command bar |
 | `Enter` | open what you typed, or the highlighted suggestion |
-| `↑` / `↓` | move through the suggestions |
+| `↑` / `↓`, `Ctrl+J` / `Ctrl+K` | move through the suggestions |
+| `Ctrl+J` / `Ctrl+K` (no list) | next / previous tab |
+| `Ctrl+1` … `Ctrl+8` | go to that tab |
+| `Ctrl+9` | go to the last tab |
 | `Ctrl+R`, `F5` | reload |
 | `Alt+Left` / `Alt+Right` | back / forward |
 | `F12`, `Ctrl+Shift+I` | DevTools |
@@ -88,16 +91,18 @@ include `a`-`z`, `0`-`9`, `left`, `right`, `up`, `down`, `escape`, `enter`,
 
 ## Command bar
 
-`Ctrl+P` and `:` open the bar at `:s `, the search command: everything typed
-after it is the query, and `Enter` searches. `Ctrl+L`/`Ctrl+K` open it on the
-current address instead, where a leading `:` turns the input back into a
-command.
+`:` opens vim's command line: the field starts on `:`, and `:s <words>` is the
+search. `Ctrl+P` opens the same bar on an empty field (text that names no
+command is searched either way), and `Ctrl+L`/`Ctrl+K` open it on the current
+address.
 
-While you type, a list grows up out of the bar and narrows as you type:
+While you type, a list grows up out of the bar and narrows with you:
 
-- `🔍` the search itself, first row, submitted on `Enter`
+- `🕘` pages you have visited, ranked by frecency, `Enter` on the first one
 - `★` favourites, added and removed with `:fav`
-- `🕘` pages you have visited, ranked by frecency
+- `🔍` the web search, last row, so a query with no match still searches —
+  typing `you` preselects YouTube when you have opened it, the way Chrome does
+- `⌘` commands, while the line starts with `:`
 
 A bare address (`https://…`, `example.com`, `localhost:3000`) shows no list:
 it is going to be opened as typed.
@@ -115,7 +120,7 @@ Input typing:
 - `https://…`, `http://…`, `file:///…`, `about:blank` — opened as-is
 - `example.com` — gets `https://`
 - `localhost:3000`, `192.168.1.1:8080`, `example.com:8080` — gets `http://` (non-443 port or local/IP host)
-- anything else — search via `searchUrl`
+- anything else — search via `searchUrl`, even after a `:` that named no command
 
 Commands:
 
