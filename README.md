@@ -216,7 +216,8 @@ starting the executable again.
   the login startup folder: the first press of the day is then a request too.
 - `tbrowser.exe --quit` ends the running process — window or no window. Every
   keybinding lives inside a window, so a parked daemon has no `Ctrl+Q` to
-  press; this is how a hotkey or a script closes the browser for good.
+  press; this is how a hotkey or a script closes the browser for good. The
+  request file works too: a `show.request` holding `quit` closes it.
 
 A launcher that gets no answer can fall back to starting the app normally.
 
