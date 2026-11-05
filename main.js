@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BaseWindow, WebContentsView, session, ipcMain, Menu, shell, nativeTheme } = require('electron');
+const { app, BaseWindow, WebContentsView, session, ipcMain, Menu, shell, nativeTheme, webContents } = require('electron');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -413,6 +413,19 @@ class Browser {
     // caret back.
     await barReady;
     this.showBar();
+    // A window's first page takes the focus when its renderer finishes
+    // loading, which can be after the bar's own call has already been made:
+    // the caret then lands in the page and the palette sits unfocused. Take it
+    // back at the end of that load, once, if the bar is still the one up.
+    const firstPage = this.activeTab()?.view?.webContents;
+    if (firstPage && firstPage.isLoading()) {
+      firstPage.once('did-stop-loading', () => {
+        if (!this.barVisible || !this.bar) return;
+        const front = webContents.getFocusedWebContents();
+        if (front && front !== firstPage) return;
+        this.bar.webContents.focus();
+      });
+    }
 
     // Warm the panel and the spare chrome after the window is up: the first
     // `:extensions` and the next ctrl+n then cost nothing.
@@ -421,6 +434,15 @@ class Browser {
       if (!this.panel) this.ensurePanel();
       warmChrome();
     });
+    if (process.env.TBROWSER_FOCUS_PROBE) {
+      setTimeout(() => {
+        const front = webContents.getFocusedWebContents();
+        mark(
+          `probe win=${this.win.isFocused()} barVisible=${this.barVisible} barFocused=${this.bar.webContents.isFocused()} ` +
+            `front=${front ? path.basename(front.getURL()) : 'none'}`,
+        );
+      }, 1500);
+    }
   }
 
   /**
@@ -1404,6 +1426,10 @@ function showWindow() {
     if (NO_UI) return Promise.resolve();
     if (!existing.win.isVisible()) existing.win.show();
     existing.focus();
+    // A launch is a request to type: the bar comes up with the caret in it, the
+    // way a cold start's does, instead of leaving focus wherever the window had
+    // it. Focus lands after the window's, or the bar's would be undone.
+    existing.showBar();
     return Promise.resolve();
   }
   if (!creatingWindow) {
