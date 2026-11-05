@@ -34,6 +34,64 @@ test('the preload flag survives a reload', () => {
   assert.equal(reopened.favourites()[0].title, 'Example');
 });
 
+test('a favourite added in settings survives a reload', () => {
+  const dir = tempDir();
+  const store = new Visits(dir);
+  assert.equal(store.saveFavourite('https://example.com/docs', { title: 'Docs' }), true);
+
+  const reopened = new Visits(dir);
+  const [fav] = reopened.favourites();
+  assert.equal(fav.url, 'https://example.com/docs');
+  assert.equal(fav.title, 'Docs');
+  assert.equal(fav.warm, false);
+  // The address is the identity: adding it twice is refused, not duplicated.
+  assert.equal(reopened.saveFavourite('https://example.com/docs', { title: 'Again' }), false);
+  assert.equal(reopened.saveFavourite('not a url', {}), false);
+});
+
+test('editing a favourite keeps its day and its preload choice', () => {
+  const dir = tempDir();
+  const store = new Visits(dir, () => 1000);
+  store.saveFavourite('https://example.com/', { title: 'Example' });
+  store.setWarm('https://example.com/', true);
+
+  assert.equal(store.saveFavourite('https://example.com/', { title: 'Renamed', from: 'https://example.com/' }), true);
+  const [fav] = store.favourites();
+  assert.equal(fav.title, 'Renamed');
+  assert.equal(fav.warm, true);
+  assert.equal(fav.added, 1000);
+
+  // Moving the address moves the entry whole; the old address is gone.
+  assert.equal(store.saveFavourite('https://example.org/', { title: 'Renamed', from: 'https://example.com/' }), true);
+  const moved = new Visits(dir).favourites();
+  assert.deepEqual(
+    moved.map((entry) => [entry.url, entry.warm]),
+    [['https://example.org/', true]],
+  );
+});
+
+test('an edit onto an address that is already a favourite is refused', () => {
+  const store = new Visits(tempDir());
+  store.saveFavourite('https://one.example/', { title: 'One' });
+  store.saveFavourite('https://two.example/', { title: 'Two' });
+
+  assert.equal(store.saveFavourite('https://two.example/', { from: 'https://one.example/' }), false);
+  assert.deepEqual(
+    store.favourites().map((fav) => fav.url),
+    ['https://one.example/', 'https://two.example/'],
+  );
+});
+
+test('a favourite forgotten in settings stays forgotten', () => {
+  const dir = tempDir();
+  const store = new Visits(dir);
+  store.saveFavourite('https://example.com/', { title: 'Example' });
+  assert.equal(store.removeFavourite('https://example.com/'), true);
+  assert.equal(store.removeFavourite('https://example.com/'), false);
+
+  assert.deepEqual(new Visits(dir).favourites(), []);
+});
+
 test('dropping a favourite drops its preload choice with it', () => {
   const dir = tempDir();
   const store = new Visits(dir);

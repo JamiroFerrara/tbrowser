@@ -2285,8 +2285,10 @@ function runCommand(window, command) {
       const url = tab?.view?.webContents.getURL();
       if (!url || url === HOME) return 'nothing to favourite';
       const added = visited.toggleFavourite(url, tab.title ?? '');
-      // A favourite dropped from the list stops being preloaded with it.
+      // A favourite dropped from the list stops being preloaded with it, and
+      // a settings page showing the list redraws without a save.
       syncWarmPages();
+      announceFavourites();
       window.bar.webContents.send('bar:notice', added ? '★ added to favourites' : '★ removed from favourites');
       return null;
     }
@@ -2490,6 +2492,58 @@ function favouritesPayload() {
   return visited.favourites().map((fav) => ({ url: fav.url, title: fav.title, warm: Boolean(fav.warm) }));
 }
 
+/**
+ * The address a settings row is asking to keep, or null. Bare hosts get the
+ * scheme the command bar would give them; text that would become a search is
+ * not an address, and the search URL is what tells the two apart.
+ */
+function favouriteUrl(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const url = parseInput(text, config.searchUrl);
+  if (!url || !/^(https?|file):/i.test(url)) return null;
+  if (config.searchUrl && url.startsWith(config.searchUrl)) return null;
+  return url;
+}
+
+/** Every open settings page hears about a favourite changed, whichever window made it. */
+function announceFavourites() {
+  for (const window of windows) {
+    if (!window.panelVisible || !window.panel) continue;
+    window.panel.webContents.send('favourites:changed', { favourites: favouritesPayload() });
+  }
+}
+
+/**
+ * What the settings page's favourite rows do: add one, rewrite one, forget
+ * one, or switch one on to keep it loaded. Each row is its own save — the
+ * favourites are a list, not a form — so the bar's suggestions and the pages
+ * waiting in the background follow the edit at once.
+ */
+ipcMain.handle('favourites:action', (event, request) => {
+  if (!ctxFor(event)) return { ok: false, error: 'no window' };
+  if (!request || typeof request !== 'object') return { ok: false, error: 'invalid favourite' };
+  const action = String(request.action ?? '');
+  const url = String(request.url ?? '');
+  if (action === 'save') {
+    const address = favouriteUrl(url);
+    if (!address) return { ok: false, error: `"${url.trim()}" is not a web address` };
+    const from = request.from ? String(request.from) : null;
+    if (!visited.saveFavourite(address, { title: String(request.title ?? '').trim(), from })) {
+      return { ok: false, error: `"${address}" is already a favourite` };
+    }
+  } else if (action === 'remove') {
+    visited.removeFavourite(url);
+  } else if (action === 'warm') {
+    visited.setWarm(url, request.warm === true);
+  } else {
+    return { ok: false, error: `unknown favourite action "${action}"` };
+  }
+  syncWarmPages();
+  announceFavourites();
+  return { ok: true, favourites: favouritesPayload() };
+});
+
 /** The saved sessions as the settings page lists them, and which one this window shows. */
 function sessionsPayload(window) {
   const showing = window?.workspaceName?.toLowerCase() ?? null;
@@ -2589,9 +2643,6 @@ ipcMain.handle('settings:save', (event, patch) => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
-  // The preload switches are the favourites' own: only the rows the form sent
-  // change, so a favourite added in another window keeps the choice it has.
-  for (const [url, warm] of Object.entries(patch.warm ?? {})) visited.setWarm(url, Boolean(warm));
   applyConfig(next, 'panel', event.sender);
   // The form re-renders from what was stored, not from what it sent: the
   // switches it shows after a save are the ones the browser will obey.

@@ -137,23 +137,19 @@
     margin-bottom: 6px;
   }
   .kbd-label { font-size: 13px; color: #c8c8c8; }
-  .fav-row {
+  .fav-row,
+  .fav-new {
     display: grid;
-    grid-template-columns: 16px 1fr;
-    gap: 2px 8px;
+    grid-template-columns: 16px minmax(110px, 1fr) minmax(170px, 1.6fr) auto;
+    gap: 8px;
     align-items: center;
-    padding: 5px 0;
-    cursor: pointer;
+    padding: 4px 0;
   }
-  .fav-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fav-url {
-    grid-column: 2;
-    font-size: 11.5px;
-    color: #7d7d7d;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  .fav-row input[type="text"],
+  .fav-new input[type="text"] { padding: 4px 7px; }
+  .fav-remove { padding: 4px 6px; }
+  .fav-new { margin-top: 10px; }
+  .fav-gap { width: 16px; }
   .session-row {
     display: grid;
     grid-template-columns: minmax(120px, 1fr) auto auto auto;

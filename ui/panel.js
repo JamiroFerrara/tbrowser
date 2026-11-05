@@ -184,11 +184,11 @@ function group(heading, ...fields) {
   return section;
 }
 
-function checkbox(checked) {
+function checkbox(checked, { dirty = true } = {}) {
   const input = document.createElement('input');
   input.type = 'checkbox';
   input.checked = checked;
-  input.addEventListener('change', markDirty);
+  if (dirty) input.addEventListener('change', markDirty);
   return input;
 }
 
@@ -202,13 +202,90 @@ function textInput(value, hint) {
   return input;
 }
 
-/** One favourite, with the switch that keeps it loaded in the background. */
+/** A text field of its own: a favourite row saves itself, not the settings form. */
+function plainInput(value, placeholder, className) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.spellcheck = false;
+  input.value = value ?? '';
+  input.placeholder = placeholder ?? '';
+  if (className) input.className = className;
+  return input;
+}
+
+/** One editable favourite: its title, its address, its preload switch, Remove. */
 function favouriteRow(fav) {
-  const row = el('label', 'fav-row');
-  const box = checkbox(fav.warm === true);
-  box.className = 'warm-box';
-  box.dataset.url = fav.url;
-  row.append(box, el('span', 'fav-name', fav.title || fav.url), el('span', 'fav-url', fav.url));
+  const row = el('div', 'fav-row');
+  const warm = checkbox(fav.warm === true, { dirty: false });
+  warm.className = 'warm-box';
+  warm.dataset.url = fav.url;
+  warm.title = 'Keep this page loaded in the background';
+  warm.addEventListener('change', async () => {
+    const result = await favouriteAction({ action: 'warm', url: fav.url, warm: warm.checked });
+    if (!result.ok) warm.checked = fav.warm === true;
+  });
+
+  const title = plainInput(fav.title, 'Title', 'fav-title');
+  title.setAttribute('aria-label', 'Favourite title');
+  const url = plainInput(fav.url, 'https://example.com', 'fav-address');
+  url.setAttribute('aria-label', 'Favourite address');
+
+  const commit = async () => {
+    const nextTitle = title.value.trim();
+    const nextUrl = url.value.trim();
+    if (nextTitle === (fav.title ?? '') && nextUrl === fav.url) return;
+    const result = await favouriteAction({ action: 'save', from: fav.url, url: nextUrl, title: nextTitle });
+    if (!result.ok) {
+      // The row goes back to what is stored: a save that failed left no trace.
+      title.value = fav.title ?? '';
+      url.value = fav.url;
+    }
+  };
+  for (const input of [title, url]) {
+    input.addEventListener('change', commit);
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      commit();
+    });
+  }
+
+  const remove = el('button', 'fav-remove ghost', 'Remove');
+  remove.title = 'Forget this favourite';
+  remove.addEventListener('click', () => favouriteAction({ action: 'remove', url: fav.url }));
+
+  row.append(warm, title, url, remove);
+  return row;
+}
+
+/** The fields that add one: a title to tell it apart, and the address. */
+function favouriteNewRow() {
+  const row = el('div', 'fav-new');
+  const title = plainInput('', 'Title (optional)', 'fav-title');
+  title.setAttribute('aria-label', 'New favourite title');
+  const url = plainInput('', 'https://example.com', 'fav-address');
+  url.setAttribute('aria-label', 'New favourite address');
+  const add = el('button', 'primary', 'Add favourite');
+
+  const commit = async () => {
+    if (!url.value.trim()) {
+      setStatus('A favourite needs an address.', 'err');
+      url.focus();
+      return;
+    }
+    const result = await favouriteAction({ action: 'save', url: url.value, title: title.value });
+    if (result.ok) setStatus('Favourite saved.', 'ok');
+  };
+  add.addEventListener('click', commit);
+  for (const input of [title, url]) {
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      commit();
+    });
+  }
+
+  row.append(el('span', 'fav-gap'), title, url, add);
   return row;
 }
 
@@ -236,6 +313,47 @@ function keyRows(config, defaults) {
 function setStatus(text, kind) {
   status.className = `status ${kind ?? ''}`.trim();
   status.textContent = text;
+}
+
+// --------------------------------------------------------------- favourites
+
+let favouritesSection = null;
+
+/**
+ * One round trip to the browser, then the list redraws from the answer. Each
+ * edit is saved on its own, so the rows always show what the browser stored.
+ */
+async function favouriteAction(request) {
+  let result;
+  try {
+    result = await window.panel.favourites(request);
+  } catch (err) {
+    result = { ok: false, error: err.message };
+  }
+  if (!result.ok) {
+    setStatus(result.error, 'err');
+    return result;
+  }
+  model.favourites = result.favourites ?? [];
+  renderFavourites();
+  return result;
+}
+
+function renderFavourites() {
+  if (!favouritesSection) return;
+  const list = model.favourites ?? [];
+  favouritesSection.replaceChildren(
+    el('h2', '', 'Favourites'),
+    el(
+      'div',
+      'hint',
+      'The pages the bar suggests first. Edit one here and the list, the suggestions and what stays loaded follow straight away — nothing to Save.',
+    ),
+    ...(list.length
+      ? list.map(favouriteRow)
+      : [el('div', 'hint', 'No favourites yet — add one below, or star the page you are on with :fav.')]),
+    favouriteNewRow(),
+  );
 }
 
 // ------------------------------------------------------------------ sessions
@@ -348,8 +466,6 @@ function renderSessions() {
 function collect() {
   const keybindings = {};
   for (const input of content.querySelectorAll('.kbd-input')) keybindings[input.dataset.action] = input.value;
-  const warm = {};
-  for (const box of content.querySelectorAll('.warm-box')) warm[box.dataset.url] = box.checked;
   return {
     searchUrl: content.querySelector('#setting-search-url').value,
     adblock: content.querySelector('#setting-adblock').checked,
@@ -360,7 +476,6 @@ function collect() {
     blurOpacity: content.querySelector('#setting-blur-opacity').value,
     blurMaterial: content.querySelector('#setting-blur-material').value,
     keybindings,
-    warm,
   };
 }
 
@@ -387,7 +502,6 @@ function renderSettings(data) {
   blurOpacity.id = 'setting-blur-opacity';
   const blurMaterial = textInput(model.config.blurMaterial, 'mica');
   blurMaterial.id = 'setting-blur-material';
-  const favourites = model.favourites ?? [];
 
   const save = el('button', 'primary', 'Save');
   const revert = el('button', '', 'Revert');
@@ -427,6 +541,8 @@ function renderSettings(data) {
 
   sessionsSection = el('section', 'group');
   renderSessions();
+  favouritesSection = el('section', 'group');
+  renderFavourites();
 
   const sections = [
     group(
@@ -469,12 +585,10 @@ function renderSettings(data) {
       field(
         el('span', '', 'Keep favourite pages ready to open'),
         preload,
-        'A favourite switched on below stays loaded in the background, so opening it is instant. One left for a while is fetched again when you come back to it.',
+        'A favourite switched on in the list below stays loaded in the background, so opening it is instant. One left for a while is fetched again when you come back to it.',
       ),
-      ...(favourites.length
-        ? favourites.map(favouriteRow)
-        : [el('div', 'hint', 'No favourites yet — star a page with :fav, then pick it here.')]),
     ),
+    favouritesSection,
     sessionsSection,
     (() => {
       const section = el('section', 'group');
@@ -544,6 +658,16 @@ window.panel.onSessionsChanged((data) => {
   if (!model) return;
   model.sessions = data.sessions;
   if (title.textContent === 'Settings') renderSessions();
+});
+
+// A favourite starred, edited or forgotten anywhere — the bar, another
+// window's settings page — redraws the list. A row being typed in keeps its
+// text: the next focus change shows the new list.
+window.panel.onFavouritesChanged((data) => {
+  if (!model || title.textContent !== 'Settings') return;
+  model.favourites = data.favourites ?? [];
+  if (favouritesSection?.contains(document.activeElement)) return;
+  renderFavourites();
 });
 
 // A config file edited outside the browser lands here: the new values are
