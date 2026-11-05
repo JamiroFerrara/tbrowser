@@ -434,15 +434,6 @@ class Browser {
       if (!this.panel) this.ensurePanel();
       warmChrome();
     });
-    if (process.env.TBROWSER_FOCUS_PROBE) {
-      setTimeout(() => {
-        const front = webContents.getFocusedWebContents();
-        mark(
-          `probe win=${this.win.isFocused()} barVisible=${this.barVisible} barFocused=${this.bar.webContents.isFocused()} ` +
-            `front=${front ? path.basename(front.getURL()) : 'none'}`,
-        );
-      }, 1500);
-    }
   }
 
   /**
