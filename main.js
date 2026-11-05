@@ -63,8 +63,60 @@ const chromeBg = () => (nativeTheme.shouldUseDarkColors ? CHROME_BG.dark : CHROM
 const WIN11_22H2 = 22621;
 const desktopBlur =
   process.platform === 'win32' && Number(os.release().split('.')[2]) >= WIN11_22H2;
+/**
+ * The acrylic the Windows Terminal paints is the window's accent brush, not
+ * its DWM backdrop: DWM withdraws the backdrop from a window that is not in
+ * front — it is why the blur vanished with the focus — while the accent keeps
+ * blurring whether the window is active or not. It is one call on the window
+ * handle, so it goes through koffi, a prebuilt FFI: no native build in the
+ * install, and nothing to compile on the machine that packs it.
+ */
+const ACCENT_ACRYLIC = 4; // ACCENT_ENABLE_ACRYLICBLURBEHIND
+const WCA_ACCENT_POLICY = 19;
+let accent = null; // undefined until asked for: the call, or false when it cannot be had
+function accentCall() {
+  if (accent !== null) return accent;
+  try {
+    const koffi = require('koffi');
+    const user32 = koffi.load('user32.dll');
+    const policy = koffi.struct('TbAccentPolicy', {
+      nAccentState: 'int',
+      nFlags: 'int',
+      nColor: 'uint32',
+      nAnimationId: 'int',
+    });
+    const payload = koffi.struct('TbCompositionAttribData', {
+      nAttribute: 'int',
+      pData: 'void *',
+      ulDataSize: 'size_t',
+    });
+    const set = user32.func(
+      'int SetWindowCompositionAttribute(uintptr_t hwnd, TbCompositionAttribData *data)',
+    );
+    const buffer = koffi.alloc(policy, 1);
+    const size = koffi.sizeof(policy);
+    accent = (win, color) => {
+      koffi.encode(buffer, policy, {
+        nAccentState: ACCENT_ACRYLIC,
+        nFlags: 0,
+        nColor: color,
+        nAnimationId: 0,
+      });
+      const handle = win.getNativeWindowHandle();
+      const hwnd = handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0));
+      return set(hwnd, { nAttribute: WCA_ACCENT_POLICY, pData: buffer, ulDataSize: size });
+    };
+  } catch (err) {
+    console.warn(`[tbrowser] the window's acrylic is unavailable: ${err.message}`);
+    accent = false;
+  }
+  return accent;
+}
+
 /** Whether the desktop is blurred behind the window: the setting, on a Windows that draws it. */
 const blurOn = () => desktopBlur && config?.blur === true;
+/** Whether that blur is the accent brush, which stays put when the window is not in front. */
+const acrylicOn = () => blurOn() && config.blurMaterial === 'acrylic' && accentCall() !== false;
 /**
  * The colour the empty tab and the chrome paint: the desktop blur showing
  * through `blurColor` at `blurOpacity` percent — the Windows Terminal window's
@@ -73,10 +125,34 @@ const blurOn = () => desktopBlur && config?.blur === true;
  */
 function surfaceBg() {
   if (!blurOn()) return chromeBg();
+  // The accent brush carries the tint itself, so its surfaces stay clear;
+  // anything else is tinted here, over the backdrop.
+  if (acrylicOn()) return '#00000000';
   const alpha = Math.round((config.blurOpacity / 100) * 255)
     .toString(16)
     .padStart(2, '0');
   return `#${alpha}${config.blurColor.slice(1)}`;
+}
+
+/** The tint as the accent brush wants it: 0xAABBGGRR, alpha in the top byte. */
+function accentColor() {
+  const rgb = config.blurColor.slice(1);
+  const alpha = Math.round((config.blurOpacity / 100) * 255)
+    .toString(16)
+    .padStart(2, '0');
+  return parseInt(`${alpha}${rgb.slice(4, 6)}${rgb.slice(2, 4)}${rgb.slice(0, 2)}`, 16);
+}
+
+/** (Re)apply the accent brush and its tint to a window that is already open. */
+function paintAccent(win) {
+  const set = accentCall();
+  if (!set || !win) return false;
+  try {
+    return set(win, accentColor()) !== 0;
+  } catch (err) {
+    console.warn(`[tbrowser] could not paint the acrylic: ${err.message}`);
+    return false;
+  }
 }
 // `--no-ui` is the test launch: the window is built exactly as a real one and
 // never put on screen, so a run that only needs the browser up — a smoke test,
@@ -309,8 +385,9 @@ function applyBlur() {
   for (const window of windows) {
     const win = window.win;
     if (!win) continue;
-    if (desktopBlur) win.setBackgroundMaterial(blurred ? config.blurMaterial : 'none');
+    if (desktopBlur) win.setBackgroundMaterial(blurred && !acrylicOn() ? 'mica' : 'none');
     win.setBackgroundColor(blurred ? '#00000000' : chromeBg());
+    if (acrylicOn()) paintAccent(win);
     for (const [kind, view] of [
       ['bar', window.bar],
       ['panel', window.panel],
@@ -597,16 +674,21 @@ class Browser {
       minHeight: 240,
       show: false,
       title: 'tbrowser',
-      // The backdrop is the window's, not a view's: ask Windows for it when
-      // the setting is on, and the surfaces over it paint the tint the views
-      // are given. No `backgroundColor` beside it — an opaque one would paint
-      // over the blur.
-      ...(blurOn()
-        ? { backgroundMaterial: config.blurMaterial }
-        : { backgroundColor: chromeBg() }),
+      // The backdrop is the window's, not a view's. The accent brush needs a
+      // see-through window to show through — no colour, no material — and the
+      // tint is painted by the brush, not by the views. Mica is the DWM
+      // backdrop, which the views tint themselves.
+      ...(acrylicOn()
+        ? { transparent: true, backgroundColor: '#00000000' }
+        : blurOn()
+          ? { backgroundMaterial: 'mica' }
+          : { backgroundColor: chromeBg() }),
     });
     this.win = win;
     windows.add(this);
+    // The brush survives the window becoming inactive; re-asserting it when the
+    // window comes back is what keeps a theme flip or a material switch honest.
+    if (acrylicOn()) win.on('focus', () => paintAccent(win));
 
     this.restoreBounds();
 

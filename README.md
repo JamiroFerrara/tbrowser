@@ -78,7 +78,7 @@ Everything is rebindable in `config.json` (created on first run):
   "blur": true,
   "blurOpacity": 37,
   "blurColor": "#24273a",
-  "blurMaterial": "mica",
+  "blurMaterial": "acrylic",
   "keybindings": {
     "openBar": ["ctrl+l", "ctrl+k", ":"],
     "search": ["ctrl+p"],
@@ -229,13 +229,15 @@ the defaults are the terminal's own numbers: the Catppuccin Macchiato base,
 `#24273a`, at 37%, the Debian profile's opacity. All of it is in settings
 under *Look*.
 
-`blurMaterial` picks the Windows material. `mica` (the default) is the one
-Windows keeps on a window that is not in front, so losing the focus does not
-change the picture; `acrylic` blurs what is actually behind the window instead
-of the wallpaper, but Windows drops it as soon as another window takes the
-focus, and the browser turns into a clear hole when it is not the front
-window. The tint can only lighten the material: Windows lays its own wash over
-the desktop, and no setting removes that.
+`blurMaterial` picks the Windows material. `acrylic` (the default) is the
+accent brush the Windows Terminal paints: it blurs what is behind the window
+and keeps blurring when the window is not in front. It is one call on the
+window handle, made through koffi — a prebuilt FFI, so nothing is compiled to
+install it — and the pack step fetches koffi's Windows binary for the build.
+`mica` is Windows' own DWM material: drawn from the wallpaper, subtler, and
+kept for a window that is not in front as well. The tint can only lighten the
+material: Windows lays its own wash over the desktop, and no setting removes
+that.
 
 ## Extensions
 

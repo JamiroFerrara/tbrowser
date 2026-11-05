@@ -449,7 +449,7 @@ function renderSettings(data) {
       field(
         el('span', '', 'Blur material'),
         blurMaterial,
-        'mica or acrylic. mica stays when the window is not in front; acrylic blurs what is behind the window instead of the wallpaper, but Windows removes it as soon as another window takes the focus.',
+        'acrylic is the brush the Windows Terminal paints: it blurs what is behind the window and keeps blurring when another window takes the focus. mica is Windows\' own, drawn from the wallpaper and much subtler.',
       ),
     ),
     group(

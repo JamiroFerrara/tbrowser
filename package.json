@@ -11,7 +11,7 @@
     "start": "electron .",
     "test": "node --test",
     "add-ext": "node scripts/install-extension.mjs",
-    "pack:win": "electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\""
+    "pack:win": "node scripts/fetch-koffi-win.mjs && electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --asar.unpack=\"**/*.node\" --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\""
   },
   "devDependencies": {
     "@electron/packager": "^18.3.6",
@@ -19,6 +19,10 @@
     "fflate": "^0.8.2"
   },
   "dependencies": {
-    "@ghostery/adblocker-electron": "^2.20.3"
+    "@ghostery/adblocker-electron": "^2.20.3",
+    "koffi": "^3.3.7"
+  },
+  "optionalDependencies": {
+    "@koromix/koffi-win32-x64": "^3.3.7"
   }
 }
