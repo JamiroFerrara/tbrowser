@@ -279,9 +279,9 @@ cold start.
   window as a normal app does.
 - `Ctrl+N` reuses the running process: the session, extensions and blocking are
   already warm, so a new window paints before it has loaded anything and is
-  usable in about a tenth of a second. Every window keeps its own tabs, its own
-  sidebar and its own bounds; closing one leaves the others alone, and closing
-  the last still parks the process.
+  usable in about a tenth of a second. Every window keeps its own tabs and its
+  own bounds; closing one leaves the others alone, and closing the last still
+  parks the process.
 - A restored tab is a record, not a renderer: its view is created the first
   time you switch to it, so ten saved tabs start one renderer, not ten.
 - The bar, the sidebar and the panel outlive the window they are shown in. A
@@ -291,7 +291,9 @@ cold start.
   `:extensions` is instant.
 - `Ctrl+E` puts the sidebar over the page: the page keeps the whole window and
   is never resized by the toggle, and showing the sidebar is one view added,
-  with no slide animation stealing frames from the page.
+  with no slide animation stealing frames from the page. A window opens without
+  it — a new window and a restored session both start on the whole page — and
+  the key is the only thing that brings it out, for that window.
 - Tab state is written at most every 250 ms instead of synchronously on every
   navigation, and flushed when the window closes.
 - Keybindings are parsed once at startup, not on every keystroke.
