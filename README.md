@@ -94,7 +94,8 @@ include `a`-`z`, `0`-`9`, `left`, `right`, `up`, `down`, `escape`, `enter`,
 `:` opens vim's command line: the field starts on `:`, and `:s <words>` is the
 search. `Ctrl+P` opens the same bar on an empty field (text that names no
 command is searched either way), and `Ctrl+L`/`Ctrl+K` open it on the current
-address.
+address. Pressed while the bar is already up, any of them only brings the caret
+back to it — the text you had typed stays where it was.
 
 While you type, a list grows up out of the bar and narrows with you:
 
