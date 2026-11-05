@@ -6,6 +6,15 @@ const list = document.getElementById('list');
 // rebuild the whole list, which threw away hover, scroll position and the row
 // under the pointer; now only what changed is touched.
 const rows = new Map();
+// One heading per window, kept the same way. The list is the whole browser's
+// tabs, so the heading is what says which window a row belongs to.
+const headings = new Map();
+
+function createHeading() {
+  const heading = document.createElement('div');
+  heading.className = 'window';
+  return heading;
+}
 
 function createRow(id) {
   const row = document.createElement('div');
@@ -36,9 +45,26 @@ function createRow(id) {
 
 function render(tabs) {
   const keep = new Set();
+  const liveHeadings = new Set();
   let placed = null;
+  let windowId = null;
 
   for (const tab of tabs) {
+    if (tab.window !== windowId) {
+      windowId = tab.window;
+      liveHeadings.add(windowId);
+      let heading = headings.get(windowId);
+      if (!heading) {
+        heading = createHeading();
+        headings.set(windowId, heading);
+      }
+      const label = tab.here ? 'this window' : `window ${tab.slot}`;
+      if (heading.textContent !== label) heading.textContent = label;
+      const where = placed ? placed.nextSibling : list.firstChild;
+      if (heading !== where) list.insertBefore(heading, where);
+      placed = heading;
+    }
+
     keep.add(tab.id);
     let row = rows.get(tab.id);
     if (!row) {
@@ -46,7 +72,9 @@ function render(tabs) {
       rows.set(tab.id, row);
     }
 
-    const className = tab.active ? 'tab active' : 'tab';
+    // Only the focused tab of this window is "the" tab: another window's
+    // focused tab is a page that window shows, not this one's.
+    const className = tab.here && tab.active ? 'tab active' : 'tab';
     if (row.className !== className) row.className = className;
 
     const name = tab.title || '';
@@ -64,6 +92,11 @@ function render(tabs) {
     if (keep.has(id)) continue;
     rows.delete(id);
     row.remove();
+  }
+  for (const [id, heading] of headings) {
+    if (liveHeadings.has(id)) continue;
+    headings.delete(id);
+    heading.remove();
   }
 }
 

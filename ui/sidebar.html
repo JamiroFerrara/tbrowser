@@ -38,6 +38,14 @@
   }
   header button:hover { border-color: #555; color: #fff; }
   #list { flex: 1; overflow-y: auto; padding: 0 4px 8px; }
+  .window {
+    padding: 10px 8px 4px;
+    color: #777;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .window:first-child { padding-top: 2px; }
   .tab {
     display: flex;
     align-items: center;
@@ -68,6 +76,7 @@
     .tab:hover { background: #e7e7e7; }
     .tab.active { background: #dcdcdc; color: #000; }
     header, footer { color: #777; }
+    .window { color: #777; }
     header button { border-color: #ccc; }
   }
 </style>

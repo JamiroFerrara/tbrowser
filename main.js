@@ -1,6 +1,17 @@
 'use strict';
 
-const { app, BaseWindow, WebContentsView, session, ipcMain, Menu, shell, nativeTheme, webContents } = require('electron');
+const {
+  app,
+  BaseWindow,
+  WebContentsView,
+  View,
+  session,
+  ipcMain,
+  Menu,
+  shell,
+  nativeTheme,
+  webContents,
+} = require('electron');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -15,13 +26,25 @@ const { Visits } = require('./lib/history');
 const { PreloadPool } = require('./lib/preload');
 const { suggestions } = require('./lib/suggest');
 const { Workspaces, normalizeName, autoName, LAST: LAST_WORKSPACE } = require('./lib/workspaces');
-const { splitBounds } = require('./lib/layout');
+const { splitBounds, edgeBounds } = require('./lib/layout');
+const { sharedTabs } = require('./lib/shared-tabs');
 
 const BAR_HEIGHT = 44;
 const BAR_ROW = 32;
 const BAR_PAD = 8;
 const SIDEBAR_WIDTH = 220;
-const SPLIT_GAP = 2; // the line between two panes, drawn by the window behind them
+// The frame around a pane: the panes keep that far from the edge of the page
+// area, and the strip left over is painted with the pane's colour. The line
+// between two panes is the two frames meeting, so the split shows which pane
+// has the keys on the seam as well as around the outside.
+const SPLIT_EDGE = 2;
+const SPLIT_GAP = SPLIT_EDGE * 2;
+// tmux's pane frame: every pane is outlined, and the one holding the keys is
+// lit in the accent the rest of the chrome already uses.
+const PANE_EDGE = { dark: '#3a3a3a', light: '#d4d4d4' };
+const PANE_EDGE_ACTIVE = { dark: '#5b8def', light: '#5b8def' };
+const paneEdge = (active) =>
+  (active ? PANE_EDGE_ACTIVE : PANE_EDGE)[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
 const PARTITION = 'persist:tbrowser';
 // The new-tab page is a local file, not about:blank: Chromium paints a blank
 // document white whatever the theme, so the first thing a launch showed was a
@@ -137,6 +160,10 @@ const windows = new Set();
 const viewOwners = new Map(); // webContents.id -> Browser
 let remembered = null; // the last window's snapshot, kept while none are open
 let nextWindowId = 1;
+// One counter for every window: a tab is named by its id across the whole
+// browser, so the lists that show tabs from more than one window can hand the
+// id back to `:tab` without asking which window it came from.
+let nextTabId = 1;
 
 const stateFile = () => path.join(app.getPath('userData'), 'state.json');
 
@@ -507,7 +534,6 @@ class Browser {
 
     this.tabs = new Map();
     this.activeTabId = null;
-    this.nextTabId = 1;
 
     this.bar = undefined;
     this.barVisible = false;
@@ -630,7 +656,7 @@ class Browser {
         win.contentView.addChildView(view);
         this.sidebarAttached = true;
         this.layout();
-        this.updateSidebar();
+        updateSidebars();
       });
     }
 
@@ -668,7 +694,7 @@ class Browser {
     this.saved = {};
 
     this.layout();
-    this.updateSidebar();
+    updateSidebars();
     mark('page created');
     // The favourites kept ready load now, beside the bar: they are decoration
     // for a later keystroke, so nothing this launch shows waits on them, and
@@ -756,6 +782,9 @@ class Browser {
     this.win = undefined;
 
     windows.delete(this);
+    // The tabs this window held are no longer anyone's: the windows still open
+    // drop them from their sidebars.
+    if (windows.size) updateSidebars();
     // A parked browser holds no preloaded renderer: with no window open there
     // is nothing for them to make instant, so the memory goes back.
     if (!windows.size) syncWarmPages();
@@ -877,9 +906,16 @@ class Browser {
       const va = a?.view;
       const vb = b?.view;
       if (va && vb) {
-        const [first, second] = splitBounds(width, contentHeight, this.split.orientation, SPLIT_GAP);
+        const [first, second] = splitBounds(
+          width,
+          contentHeight,
+          this.split.orientation,
+          SPLIT_GAP,
+          SPLIT_EDGE,
+        );
         if (place(va, first)) this.pageLayouts += 1;
         if (place(vb, second)) this.pageLayouts += 1;
+        this.placePaneEdges({ a: first, b: second });
       }
     } else if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
       this.pageLayouts += 1;
@@ -900,6 +936,71 @@ class Browser {
   }
 
   // ------------------------------------------------------------------ panes
+
+  /**
+   * The four strips that frame a pane, tmux's way of saying which one holds
+   * the keys. Plain views, not pages: an indicator costs no renderer, and the
+   * strips cover none of either page — the panes already leave that room.
+   */
+  buildPaneEdges() {
+    if (this.paneEdges) return this.paneEdges;
+    const edges = [];
+    for (const slot of ['a', 'b']) {
+      for (const side of ['top', 'bottom', 'left', 'right']) {
+        edges.push({ slot, side, view: new View() });
+      }
+    }
+    this.paneEdges = edges;
+    return edges;
+  }
+
+  /**
+   * Put the frames in the window: above the pages, so they show, and below the
+   * chrome, so a sidebar or bar that floats over the split is not painted
+   * across. Called once per split — the frames are then left to `layout`.
+   */
+  attachPaneEdges() {
+    const pages = [...this.tabs.values()].filter((tab) => tab.attached).length;
+    this.buildPaneEdges().forEach(({ view }, index) => {
+      this.win.contentView.addChildView(view, pages + index);
+    });
+  }
+
+  detachPaneEdges() {
+    for (const { view } of this.paneEdges ?? []) {
+      try {
+        this.win?.contentView.removeChildView(view);
+      } catch {
+        // the window is already gone with the split
+      }
+    }
+    this.paneEdges = null;
+  }
+
+  /** Which of the two panes the keys and the bar act on. */
+  activePaneSlot() {
+    return this.split?.a === this.activeTabId ? 'a' : 'b';
+  }
+
+  /** Colour the frames: the pane with the keys in the accent, the other dim. */
+  paintPaneEdges() {
+    if (!this.paneEdges) return;
+    const active = paneEdge(true);
+    const idle = paneEdge(false);
+    const slot = this.activePaneSlot();
+    for (const { slot: edgeSlot, view } of this.paneEdges) {
+      view.setBackgroundColor(edgeSlot === slot ? active : idle);
+    }
+  }
+
+  /** Frame both panes where the split put them. */
+  placePaneEdges(rects) {
+    if (!this.paneEdges) return;
+    for (const { slot, side, view } of this.paneEdges) {
+      view.setBounds(edgeBounds(rects[slot], side, SPLIT_EDGE));
+    }
+    this.paintPaneEdges();
+  }
 
   /**
    * Two tabs over one window. `a` stays left (or top) and `b` right (or
@@ -924,6 +1025,7 @@ class Browser {
       this.win.contentView.addChildView(viewB, 0);
       second.attached = true;
     }
+    this.attachPaneEdges();
     this.layout();
     this.updateSidebar();
     this.persistTabs();
@@ -952,7 +1054,9 @@ class Browser {
     // One tab has nothing to pair with, so the split asks for a second page.
     if (!partner) partner = this.createTab({ activate: false });
     this.attachSplit(active.id, partner.id, orientation);
-    this.activeTabId = active.id;
+    // Splitting is a move into the pane just made, the way tmux hands the
+    // cursor to the shell a split opens: the keys land where the split did.
+    this.setActivePane(partner.id);
   }
 
   /** Close the split, keeping both tabs: the focused one fills the window. */
@@ -969,6 +1073,7 @@ class Browser {
       other.attached = false;
     }
     this.split = null;
+    this.detachPaneEdges();
     this.layout();
     this.updateSidebar();
     this.persistTabs();
@@ -988,6 +1093,7 @@ class Browser {
     this.activeTabId = id;
     const view = this.tabView(tab);
     if (focus) view.webContents.focus();
+    this.paintPaneEdges();
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
     this.updateSidebar();
     this.persistTabs();
@@ -1016,7 +1122,7 @@ class Browser {
 
     const urls = Array.isArray(state.tabs) && state.tabs.length ? state.tabs : [HOME];
     const ids = urls.map((url) => {
-      const id = this.nextTabId++;
+      const id = nextTabId++;
       this.tabs.set(id, { id, view: null, title: '', url });
       return id;
     });
@@ -1030,7 +1136,7 @@ class Browser {
         this.attachSplit(a, b, split.orientation === 'horizontal' ? 'horizontal' : 'vertical');
       }
     }
-    this.updateSidebar();
+    updateSidebars();
     this.persistTabs();
   }
 
@@ -1092,14 +1198,13 @@ class Browser {
     }
   }
 
-  /** The open tabs as the palette needs them: title, address, which has focus. */
+  /**
+   * Every open tab in the browser, this window's first, as the palette needs
+   * it. A tab of another window carries that window's place in the list, so
+   * the row can say where it lives.
+   */
   pickerTabs() {
-    return [...this.tabs.values()].map((tab) => ({
-      id: tab.id,
-      title: tab.title || this.titleFor(tab),
-      url: this.urlOf(tab),
-      active: tab.id === this.activeTabId,
-    }));
+    return sharedTabRows(this);
   }
 
   navigate(raw) {
@@ -1144,7 +1249,7 @@ class Browser {
     // The visit is recorded last: it writes to disk, and the page is already
     // on its way to the screen.
     visited.record(tab.url, tab.title);
-    this.updateSidebar();
+    updateSidebars();
     mark('tab warm');
     return view;
   }
@@ -1251,19 +1356,7 @@ class Browser {
       this.parkView(tab, gone, delta < 0 ? 'forward' : 'back');
     }
     visited.record(tab.url, tab.title);
-    this.updateSidebar();
-  }
-
-  updateSidebar() {
-    if (!this.sidebar || !this.sidebarLoaded) return;
-    this.sidebar.webContents.send(
-      'tabs:update',
-      [...this.tabs.values()].map((tab) => ({
-        id: tab.id,
-        title: tab.title || this.titleFor(tab),
-        active: tab.id === this.activeTabId,
-      })),
-    );
+    updateSidebars();
   }
 
   /**
@@ -1309,7 +1402,7 @@ class Browser {
       if (tab.id === this.activeTabId && this.win) {
         this.win.setTitle(title ? `${title} — tbrowser` : 'tbrowser');
       }
-      this.updateSidebar();
+      updateSidebars();
     });
     wc.on('did-navigate', (_event, url) => {
       tab.url = url;
@@ -1367,7 +1460,7 @@ class Browser {
   }
 
   createTab({ url = HOME, activate = true, openBar = false, focus = true } = {}) {
-    const id = this.nextTabId++;
+    const id = nextTabId++;
     const tab = { id, view: null, title: '', url, attached: false };
     this.tabs.set(id, tab);
     // activateTab already repaints the list; only a background tab needs it.
@@ -1375,7 +1468,7 @@ class Browser {
     // two focus calls in a row let the page's land last, which left the caret
     // in the new page rather than in the palette that had just opened.
     if (activate) this.activateTab(id, { focus: focus && !openBar });
-    else this.updateSidebar();
+    else updateSidebars();
     this.persistTabs();
     if (openBar) this.showBar();
     return tab;
@@ -1409,7 +1502,7 @@ class Browser {
       this.layout();
       if (focus) view.webContents.focus();
       this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
-      this.updateSidebar();
+      updateSidebars();
       this.persistTabs();
       return;
     }
@@ -1429,7 +1522,7 @@ class Browser {
     this.layout();
     if (focus) view.webContents.focus();
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
-    this.updateSidebar();
+    updateSidebars();
     this.persistTabs();
   }
 
@@ -1489,7 +1582,7 @@ class Browser {
       }
       this.activateTab(next);
     }
-    this.updateSidebar();
+    updateSidebars();
     this.persistTabs();
   }
 
@@ -1688,7 +1781,7 @@ class Browser {
     track(this, this.sidebar);
     this.sidebarReady = entry.ready.then(() => {
       this.sidebarLoaded = true;
-      if (this.win) this.updateSidebar();
+      if (this.win) updateSidebars();
     });
     return this.sidebar;
   }
@@ -1718,6 +1811,64 @@ class Browser {
 }
 
 // ------------------------------------------------------------------ windows
+
+/** Every window's tabs as the shared list wants them: ids, titles, addresses. */
+function windowTabLists() {
+  return [...windows].map((window) => ({
+    id: window.id,
+    tabs: [...window.tabs.values()].map((tab) => ({
+      id: tab.id,
+      title: tab.title || window.titleFor(tab),
+      url: window.urlOf(tab),
+      active: tab.id === window.activeTabId,
+    })),
+  }));
+}
+
+/** The tabs of every window, this one's first. */
+function sharedTabRows(current) {
+  return sharedTabs(windowTabLists(), current.id);
+}
+
+/** The window holding a tab, or null when no window does. */
+function windowOfTab(id) {
+  for (const window of windows) {
+    if (window.tabs.has(id)) return window;
+  }
+  return null;
+}
+
+/**
+ * Go to a tab wherever it lives: a tab of this window is a plain switch, one
+ * held by another window brings that window to the front with it, the way
+ * `switch-client` does in tmux. A test launch never shows a window, so there
+ * it is only the switch.
+ */
+function revealTab(id, from) {
+  const owner = windowOfTab(id);
+  if (!owner) return 'no such tab';
+  from.hideBar();
+  if (owner !== from && !NO_UI && owner.win && !owner.win.isDestroyed()) {
+    if (!owner.win.isVisible()) owner.win.show();
+    owner.win.focus();
+  }
+  owner.activateTab(id);
+  return null;
+}
+
+/**
+ * A second tab on the page another one already shows. The document is its own
+ * — a renderer cannot be on two windows at once — but the session is shared, so
+ * the address is served from the memory cache the open tab filled.
+ */
+function copyTabHere(id, target) {
+  const owner = windowOfTab(id);
+  if (!owner) return 'no such tab';
+  const url = owner.urlOf(owner.tabs.get(id));
+  target.hideBar();
+  target.createTab({ url });
+  return null;
+}
 
 function createWindow(snapshot = {}) {
   const window = new Browser(snapshot);
@@ -1939,11 +2090,17 @@ function runCommand(window, command) {
     case 'workspaces':
       return workspaceCommand(window, command.args);
     case 'tab': {
+      // `:tab <id>` goes to the tab, whichever window holds it; `:tab copy
+      // <id>` opens that tab's page here instead of leaving this window.
+      const first = String(command.args[0] ?? '').toLowerCase();
+      if (first === 'copy') {
+        const copy = Number(command.args[1]);
+        if (!Number.isInteger(copy)) return 'copy which tab?';
+        return copyTabHere(copy, window);
+      }
       const id = Number(command.args[0]);
-      if (!Number.isInteger(id) || !window.tabs.has(id)) return 'no such tab';
-      window.hideBar();
-      window.activateTab(id);
-      return null;
+      if (!Number.isInteger(id)) return 'no such tab';
+      return revealTab(id, window);
     }
     case 'vsplit':
       window.hideBar();
@@ -2092,8 +2249,11 @@ ipcMain.on('sidebar:action', (event, action) => {
   const window = ctxFor(event);
   if (!window || !action || typeof action !== 'object') return;
   const id = Number(action.id);
-  if (action.type === 'activate') window.activateTab(id);
-  else if (action.type === 'close') window.closeTab(id);
+  // A row can be a tab of another window, so the action goes to the window
+  // holding it. `new` is always this window's.
+  const owner = Number.isInteger(id) ? windowOfTab(id) : null;
+  if (action.type === 'activate') revealTab(id, window);
+  else if (action.type === 'close') owner?.closeTab(id);
   else if (action.type === 'new') window.createTab({ openBar: true });
 });
 
@@ -2652,7 +2812,33 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
-    return showWindow({ restore: true });
+    const shown = showWindow({ restore: true });
+    // TEMP MEASUREMENT HOOK
+    if (process.env.TBROWSER_MEASURE_URL) {
+      return shown.then(async () => {
+        const w = [...windows].pop();
+        const rounds = Number(process.env.TBROWSER_MEASURE_ROUNDS || 1);
+        for (let i = 0; i < rounds; i++) {
+          w.navigate(process.env.TBROWSER_MEASURE_URL);
+          const wc = w.activeTab().view.webContents;
+          await new Promise((resolve) => {
+            wc.once('did-finish-load', resolve);
+            setTimeout(resolve, 30000);
+          });
+          try {
+            const probe = await wc.executeJavaScript(
+              `JSON.stringify({paint: performance.getEntriesByType('paint').map(p => [p.name, Math.round(p.startTime)]), nav: (() => { const n = performance.getEntriesByType('navigation')[0]; return n && {ttfb: Math.round(n.responseStart), dcl: Math.round(n.domContentLoadedEventEnd), load: Math.round(n.loadEventEnd)}; })(), res: performance.getEntriesByType('resource').length})`,
+            );
+            mark(`measure round ${i + 1} ${probe}`);
+          } catch (err) {
+            mark(`measure round ${i + 1} probe failed ${err.message}`);
+          }
+          console.log(`[tbrowser] measure round ${i + 1} ${w.activeTab().view.webContents.getURL()}`);
+        }
+        mark('measure done');
+      });
+    }
+    return shown;
   });
 }
 
