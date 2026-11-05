@@ -1661,6 +1661,7 @@ class Browser {
       // One pane is left, so the split goes with the tab; the surviving pane
       // fills the window.
       this.split = null;
+      this.detachPaneEdges();
       if (this.activeTabId === id) {
         this.activeTabId = null;
         if (otherId !== null && this.tabs.has(otherId)) {
