@@ -179,6 +179,28 @@ function newView(webPreferences) {
   return view;
 }
 
+/**
+ * A page can ask for a popup, and a sign-in popup is the one that matters: a
+ * login flow hands its result back through `window.opener`, which only a real
+ * window keeps. A tab created here has no opener at all, so the page that
+ * opened it waits forever — this is why "sign in with Google" did nothing.
+ * The popup shares the app's session, so the cookies a login sets are the ones
+ * the page that opened it reads, and Electron closes it with its opener.
+ */
+function popupWindowOptions() {
+  return {
+    backgroundColor: chromeBg(),
+    autoHideMenuBar: true,
+    webPreferences: {
+      partition: PARTITION,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+    },
+  };
+}
+
 function chromeView(kind, file, preload) {
   const free = freeChrome[kind];
   // A parked view whose renderer died is still a view and still in the pool.
@@ -608,8 +630,16 @@ class Browser {
   wireTab(tab) {
     const wc = tab.view.webContents;
 
-    wc.setWindowOpenHandler(({ url }) => {
-      if (URL_RE.test(url)) this.createTab({ url });
+    wc.setWindowOpenHandler(({ url, disposition, features }) => {
+      if (!URL_RE.test(url)) return { action: 'deny' };
+      // A popup is a window, not a tab: window.open with a size (the way a
+      // sign-in button opens one) must keep `window.opener` alive, which a tab
+      // we build ourselves cannot. A plain target=_blank link still lands in a
+      // tab, as it always did.
+      if (disposition === 'new-window' || features) {
+        return { action: 'allow', overrideBrowserWindowOptions: popupWindowOptions() };
+      }
+      this.createTab({ url });
       return { action: 'deny' };
     });
     wc.on('page-title-updated', (event, pageTitle) => {
