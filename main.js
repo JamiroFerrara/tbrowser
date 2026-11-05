@@ -2063,34 +2063,6 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
-    if (process.env.TB_SMOKE_SPLIT) {
-      const out = [];
-      const wl = (m) => { out.push(m); fs.writeFileSync(process.env.TB_SMOKE_SPLIT, out.join('\n') + '\n'); };
-      wl('start');
-      return showWindow().then(async () => {
-        wl('shown');
-        setTimeout(() => wl('stuck'), 20000);
-        const b = [...windows].pop();
-        const second = b.createTab({ url: 'data:text/html,<h1>B</h1>', activate: false });
-        const first = b.activeTab();
-        b.attachSplit(first.id, second.id, 'vertical');
-        await new Promise((r) => setTimeout(r, 400));
-        const log = (tag) => {
-          const va = b.tabs.get(b.split.a).view.getBounds();
-          const vb = b.tabs.get(b.split.b).view.getBounds();
-          wl(`[smoke] ${tag} a=${JSON.stringify(va)} b=${JSON.stringify(vb)} anim=${b.splitAnim} progress=${b.splitProgress}`);
-        };
-        log('vertical');
-        b.toggleSplit('horizontal');
-        await new Promise((r) => setTimeout(r, 300));
-        log('horizontal');
-        b.toggleSplit('horizontal');
-        await new Promise((r) => setTimeout(r, 300));
-        wl(`[smoke] closed split=${b.split} active=${b.activeTabId} layouts=${b.pageLayouts}`);
-        wl('done');
-        app.exit(0);
-      }).catch((e) => { wl('ERR ' + e.stack); app.exit(1); });
-    }
     return showWindow();
   });
 }
