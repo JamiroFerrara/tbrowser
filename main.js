@@ -565,6 +565,9 @@ class Browser {
     // Two panes over one window: `a` and `b` are tab ids kept in a fixed
     // order, so focusing the other one does not swap the pictures around.
     this.split = null;
+    // The strips framing those panes, lit on the one with the keys; they
+    // belong to a window, so a window that goes takes them with it.
+    this.paneEdges = null;
     // The command bar's current shape; the workspace picker is one of them.
     this.barMode = 'address';
     // The tab a split pairs with, and the tab focus came from.
@@ -761,6 +764,7 @@ class Browser {
     this.activeTabId = null;
     clearTimeout(this.persistTimer);
     this.split = null;
+    this.paneEdges = null;
     this.previousTabId = null;
     this.workspaceName = null;
     this.barMode = 'address';
@@ -1103,6 +1107,7 @@ class Browser {
   replaceTabs(state) {
     if (!this.win) return;
     this.split = null;
+    this.detachPaneEdges();
     for (const tab of this.tabs.values()) {
       if (!tab.view) continue;
       if (tab.attached) {
