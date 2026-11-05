@@ -3,6 +3,9 @@
 const title = document.getElementById('title');
 const sub = document.getElementById('sub');
 const content = document.getElementById('content');
+const nav = document.getElementById('nav');
+const actionsBar = document.getElementById('actions');
+const status = document.getElementById('status');
 
 /** What each keybinding action does, in the words the settings page shows. */
 const ACTION_LABELS = {
@@ -125,6 +128,10 @@ async function runExtensionAction(extension, action) {
 
 function renderExtensions(data) {
   title.textContent = 'Extensions';
+  nav.hidden = true;
+  actionsBar.hidden = true;
+  status.className = 'status';
+  status.textContent = '';
   const off = data.extensions.length - data.loaded;
   sub.textContent = `${data.loaded} of ${data.extensions.length} on${off ? `, ${off} switched off` : ''}. Turn one off to stop it running; its settings page opens in a tab.`;
 
@@ -154,7 +161,8 @@ function renderExtensions(data) {
 
 let model = null; // the last settings payload: config, configPath, defaults
 let dirty = false;
-let status;
+/** The settings section the sidebar shows; kept across a redraw. */
+let categoryIndex = 0;
 
 function markDirty() {
   dirty = true;
@@ -381,12 +389,10 @@ function renderSettings(data) {
   blurMaterial.id = 'setting-blur-material';
   const favourites = model.favourites ?? [];
 
-  const actions = el('div', 'row');
   const save = el('button', 'primary', 'Save');
   const revert = el('button', '', 'Revert');
   const open = el('button', '', 'Show config file');
   open.addEventListener('click', () => window.panel.openPath(model.configPath));
-  status = el('div', 'status');
 
   save.addEventListener('click', async () => {
     save.disabled = true;
@@ -414,13 +420,15 @@ function renderSettings(data) {
     setStatus('Unsaved changes dropped.', '');
   });
 
-  actions.append(save, revert, open);
+  actionsBar.replaceChildren(save, revert, open);
+  actionsBar.hidden = false;
+  nav.hidden = false;
+  status.className = 'status';
 
   sessionsSection = el('section', 'group');
   renderSessions();
 
-  content.replaceChildren(
-    actions,
+  const sections = [
     group(
       'Search',
       field(el('span', '', 'Search engine URL'), searchUrl, 'What :s sends the query to. The query is appended, so it ends in q=.'),
@@ -477,8 +485,43 @@ function renderSettings(data) {
       );
       return section;
     })(),
-    status,
-  );
+  ];
+
+  // The sidebar is one entry per section, and only the chosen section shows.
+  // Every section stays in the DOM: a half-typed field survives a switch, and
+  // Save still collects the whole form.
+  const buttons = sections.map((section, index) => {
+    const button = el('button', '', section.querySelector('h2').textContent);
+    button.type = 'button';
+    button.addEventListener('click', () => showCategory(index, true));
+    // The list is walkable with the arrows once one entry has the focus, the
+    // way a native tab strip behaves.
+    button.addEventListener('keydown', (event) => {
+      const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      const next = (index + step + sections.length) % sections.length;
+      showCategory(next, true);
+      buttons[next].focus();
+    });
+    return button;
+  });
+  const showCategory = (index, scroll) => {
+    categoryIndex = Math.min(Math.max(index, 0), sections.length - 1);
+    sections.forEach((section, i) => {
+      section.hidden = i !== categoryIndex;
+    });
+    buttons.forEach((button, i) => {
+      button.classList.toggle('active', i === categoryIndex);
+      if (i === categoryIndex) button.setAttribute('aria-current', 'true');
+      else button.removeAttribute('aria-current');
+    });
+    if (scroll) content.closest('main').scrollTop = 0;
+  };
+
+  nav.replaceChildren(el('div', 'nav-title', 'Settings'), ...buttons);
+  content.replaceChildren(...sections);
+  showCategory(categoryIndex);
 }
 
 // While a field holds focus its keystrokes are its own — ":" and ctrl+w are
