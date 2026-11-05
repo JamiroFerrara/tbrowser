@@ -73,6 +73,7 @@ Everything is rebindable in `config.json` (created on first run):
 {
   "searchUrl": "https://www.google.com/search?q=",
   "adblock": true,
+  "preload": true,
   "keybindings": {
     "openBar": ["ctrl+l", "ctrl+k", ":"],
     "search": ["ctrl+p"],
@@ -197,9 +198,15 @@ closing one leaves the other filling the window.
 
 ## New tab
 
-An empty tab is the splash the editor shows on a bare buffer: one Matrix quote,
-picked at random from the same list, centered in the window in the editor's
-face and catppuccin blue, and nothing else.
+An empty tab is the splash the editor shows on a bare buffer: a jolly roger
+drawn in ASCII — Joan G. Stark's `jgs` line art, 50 columns of `<pre>` — over
+one Matrix quote, picked at random from the same list, centered in the window
+in the editor's face and catppuccin blue.
+
+The skull flickers the way a CRT frame loses itself for a blink: an opacity
+animation in steps, so a splash left open costs a composited layer and not a
+repaint, and it stops for `prefers-reduced-motion`. It is sized by the window's
+height, so even the smallest window the browser opens still fits all of it.
 
 The bar is up and focused on every launch and every new tab, so the first thing
 you type is a search without reaching for a key first.
@@ -309,6 +316,13 @@ cold start.
   parks the process.
 - A restored tab is a record, not a renderer: its view is created the first
   time you switch to it, so ten saved tabs start one renderer, not ten.
+- A favourite can be kept ready: `:settings` lists them, and each one switched
+  on stays loaded in the background, so opening it is a view swap rather than
+  a load. Pages start one at a time after the window is up, a favourite already
+  open in a tab is not loaded a second time, and taking one starts its
+  replacement off the keystroke. The switch above the list, or `"preload":
+  false`, turns the whole thing off; no preloaded renderer outlives the last
+  window.
 - The bar, the sidebar and the panel outlive the window they are shown in. A
   reopened window gets the already-painted chrome back, so it is complete
   about 130 ms after it appears instead of waiting for three renderers.
