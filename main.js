@@ -66,6 +66,9 @@ const PERSIST_DELAY = 250;
 // A preloaded page kept ready for a while is refreshed when it is taken: the
 // tab shows the page it already has and fetches it again behind the picture.
 const WARM_REFRESH_MS = 5 * 60 * 1000;
+// How many pages a tab keeps behind and ahead of the one on screen when a warm
+// swap skipped past them. Each one is a renderer, so the list is short.
+const MAX_TAB_STEPS = 4;
 const CASCADE = 32; // pixels a new window steps off the one it opened over
 const START = Date.now();
 const mark = (label) => {
@@ -394,7 +397,15 @@ function desiredWarmUrls() {
   if (!config?.preload || !visited || windows.size === 0) return [];
   const open = new Set();
   for (const window of windows) {
-    for (const tab of window.tabs.values()) open.add(tab.url);
+    for (const tab of window.tabs.values()) {
+      open.add(tab.url);
+      // A page kept as a back or forward step is still held by the tab: the
+      // pool has no business loading a second copy of it.
+      for (const view of [...(tab.steps?.back ?? []), ...(tab.steps?.forward ?? [])]) {
+        const wc = view.webContents;
+        if (!wc.isDestroyed() && wc.getURL()) open.add(wc.getURL());
+      }
+    }
   }
   return visited
     .favourites()
@@ -718,6 +729,7 @@ class Browser {
     for (const tab of this.tabs.values()) {
       const contents = tab.view?.webContents;
       if (contents && !contents.isDestroyed()) contents.close();
+      this.closeSteps(tab);
     }
     this.tabs.clear();
     this.activeTabId = null;
@@ -996,6 +1008,7 @@ class Browser {
         tab.attached = false;
       }
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+      this.closeSteps(tab);
     }
     this.tabs.clear();
     this.activeTabId = null;
@@ -1093,10 +1106,12 @@ class Browser {
     const url = parseInput(raw, config.searchUrl);
     const tab = this.activeTab();
     if (!url || !tab) return;
-    // Opening a favourite from the empty tab swaps the splash for the page
-    // that was kept ready: nothing is lost (the tab held no address and no
-    // history), and the page is on screen at once.
-    if (tab.view && tab.url === HOME) {
+    // Opening a favourite swaps in the page that was kept ready: already
+    // loaded, so it is on screen at once. A tab with an address of its own
+    // hands the page it was showing to the back step below, so the swap costs
+    // no history; the empty tab held nothing to lose. Asking for the page the
+    // tab already shows is a refresh, not a visit: it loads the ordinary way.
+    if (tab.view && url !== tab.url) {
       const warm = takeWarmPage(url);
       if (warm) {
         this.adoptWarmPage(tab, warm, { attach: true });
@@ -1117,40 +1132,14 @@ class Browser {
   adoptWarmPage(tab, entry, { attach = false } = {}) {
     const view = entry.view;
     const wc = view.webContents;
-    const previous = tab.view;
-    tab.view = view;
-    tab.url = wc.getURL() || tab.url || entry.url;
-    track(this, view);
-    this.wireTab(tab);
-    tab.title = wc.getTitle() || tab.title;
     if (entry.done && Date.now() - entry.loadedAt > WARM_REFRESH_MS) {
       wc.reload();
     }
-    if (attach) {
-      if (previous && previous.webContents !== wc && !previous.webContents.isDestroyed()) {
-        this.unwireTab(previous.webContents);
-        if (tab.attached) this.win?.contentView.removeChildView(previous);
-        // The splash the tab was showing goes back to its own pool, as it
-        // does when an empty tab is closed.
-        if (previous.webContents.getURL() === HOME && freeTabs.length === 0) {
-          mark('tab parked');
-          freeTabs.push(previous);
-        } else {
-          previous.webContents.close();
-        }
-      }
-      if (this.win) {
-        this.win.contentView.addChildView(view, 0);
-        tab.attached = true;
-      }
-    }
-    if (tab.id === this.activeTabId) {
-      if (this.win) this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
-      this.layout();
-      // The bar had the keys until it hid, and the view it focused is the one
-      // just swapped out: the page takes the keystroke from here.
-      if (attach) wc.focus();
-      this.persistTabs();
+    const previous = this.swapTabView(tab, view, { attach });
+    tab.url = wc.getURL() || entry.url || tab.url;
+    tab.title = wc.getTitle() || tab.title;
+    if (attach && previous && previous.webContents !== wc) {
+      this.retirePage(tab, previous);
     }
     // The visit is recorded last: it writes to disk, and the page is already
     // on its way to the screen.
@@ -1160,12 +1149,109 @@ class Browser {
     return view;
   }
 
+  /**
+   * Put a view in a tab's place and hand back the one it replaced, detached
+   * and no longer listening. The caller decides where the old page goes: to
+   * the splash pool, to a history step, or closed.
+   */
+  swapTabView(tab, view, { attach = false } = {}) {
+    const previous = tab.view;
+    const wc = view.webContents;
+    if (previous && previous.webContents !== wc && !previous.webContents.isDestroyed()) {
+      this.unwireTab(previous.webContents);
+      if (tab.attached) this.win?.contentView.removeChildView(previous);
+      tab.attached = false;
+    }
+    tab.view = view;
+    tab.url = wc.getURL() || tab.url;
+    track(this, view);
+    this.wireTab(tab);
+    tab.title = wc.getTitle() || '';
+    if (attach && this.win) {
+      this.win.contentView.addChildView(view, 0);
+      tab.attached = true;
+    }
+    if (tab.id === this.activeTabId) {
+      if (this.win) {
+        this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
+        this.layout();
+        // The bar had the keys until it hid, and the view it focused is the
+        // one just swapped out: the page takes the keystroke from here.
+        if (attach) wc.focus();
+      }
+      this.persistTabs();
+    }
+    return previous;
+  }
+
+  /**
+   * The page a swap took out. An empty tab goes back to the splash pool, and a
+   * page becomes the step back: it is a whole renderer still holding what it
+   * showed, so going back is a swap rather than a load.
+   */
+  retirePage(tab, view) {
+    const wc = view.webContents;
+    if (wc.isDestroyed()) return;
+    if (wc.getURL() !== HOME) {
+      mark('tab step back');
+      this.parkView(tab, view, 'back');
+      return;
+    }
+    // The splash the tab was showing goes back to its own pool, as it does
+    // when an empty tab is closed.
+    if (freeTabs.length === 0) {
+      mark('tab parked');
+      freeTabs.push(view);
+    } else {
+      wc.close();
+    }
+  }
+
+  /** Keep a page as a step beside the one on screen, dropping the oldest. */
+  parkView(tab, view, direction) {
+    const steps = (tab.steps ??= { back: [], forward: [] });
+    steps[direction].push(view);
+    while (steps[direction].length > MAX_TAB_STEPS) {
+      const old = steps[direction].shift();
+      if (!old.webContents.isDestroyed()) old.webContents.close();
+    }
+  }
+
+  /** Close the pages a tab kept for back and forward; the tab is going. */
+  closeSteps(tab) {
+    if (!tab.steps) return;
+    for (const view of [...tab.steps.back, ...tab.steps.forward]) {
+      if (!view.webContents.isDestroyed()) view.webContents.close();
+    }
+    tab.steps = null;
+  }
+
   go(delta) {
     const tab = this.activeTab();
     if (!tab?.view) return;
     const history = tab.view.webContents.navigationHistory;
-    if (delta < 0 && history.canGoBack()) history.goBack();
-    if (delta > 0 && history.canGoForward()) history.goForward();
+    if (delta < 0 && history.canGoBack()) return history.goBack();
+    if (delta > 0 && history.canGoForward()) return history.goForward();
+    // The renderer has nothing left that way, but a warm swap may have stepped
+    // over pages the tab still has: those are the steps, and back reaches them
+    // without a load.
+    const from = delta < 0 ? tab.steps?.back : tab.steps?.forward;
+    let view = null;
+    while (from?.length) {
+      const step = from.pop();
+      if (!step.webContents.isDestroyed()) {
+        view = step;
+        break;
+      }
+    }
+    if (!view) return;
+    mark('tab step');
+    const gone = this.swapTabView(tab, view, { attach: true });
+    if (gone && !gone.webContents.isDestroyed()) {
+      this.parkView(tab, gone, delta < 0 ? 'forward' : 'back');
+    }
+    visited.record(tab.url, tab.title);
+    this.updateSidebar();
   }
 
   updateSidebar() {
@@ -1230,6 +1316,9 @@ class Browser {
       // The home page is the absence of a page; it is not a visit.
       if (url !== HOME) visited.record(url, tab.title);
       if (tab.id === this.activeTabId) this.persistTabs();
+      // The page the tab left is nobody's now: a favourite among them can be
+      // kept ready again. Deferred, so the page that is on screen comes first.
+      setImmediate(syncWarmPages);
     });
     wc.on('did-navigate-in-page', (_event, url, isMainFrame) => {
       if (!isMainFrame) return;
@@ -1373,6 +1462,8 @@ class Browser {
         }
       }
     }
+    // The pages the tab kept for back and forward went with it.
+    this.closeSteps(tab);
     if (inSplit) {
       // One pane is left, so the split goes with the tab; the surviving pane
       // fills the window.

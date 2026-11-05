@@ -336,8 +336,10 @@ cold start.
 - A restored tab is a record, not a renderer: its view is created the first
   time you switch to it, so ten saved tabs start one renderer, not ten.
 - A favourite can be kept ready: `:settings` lists them, and each one switched
-  on stays loaded in the background, so opening it is a view swap rather than
-  a load. Pages start one at a time after the window is up, a favourite already
+  on, stays loaded in the background, so opening it is a view swap rather than
+  a load, from a new tab or from any page. A page opened this way keeps the
+  page it replaced as its back step, so Back still reaches it without a reload.
+  Pages start one at a time after the window is up, a favourite already
   open in a tab is not loaded a second time, and taking one starts its
   replacement off the keystroke. The switch above the list, or `"preload":
   false`, turns the whole thing off; no preloaded renderer outlives the last
