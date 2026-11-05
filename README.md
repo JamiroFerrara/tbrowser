@@ -195,6 +195,9 @@ cold start.
   about 130 ms after it appears instead of waiting for three renderers.
 - The panel is warmed in the background after the window is up, so the first
   `:extensions` is instant.
+- `Ctrl+E` puts the sidebar over the page: the page keeps the whole window and
+  is never resized by the toggle, and showing the sidebar is one view added,
+  with no slide animation stealing frames from the page.
 - Tab state is written at most every 250 ms instead of synchronously on every
   navigation, and flushed when the window closes.
 - Keybindings are parsed once at startup, not on every keystroke.

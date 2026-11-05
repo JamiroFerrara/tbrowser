@@ -265,18 +265,16 @@ class Browser {
     });
     this.win = win;
     windows.add(this);
-    console.log('[DBG] open win=' + win.id + ' saved=' + JSON.stringify(this.saved.bounds) + ' got=' + JSON.stringify(win.getBounds()));
 
     this.restoreBounds();
 
     win.on('resize', () => this.layout());
     win.on('close', () => {
-      console.log('[DBG] close win=' + win.id + ' tabs=' + this.tabs.size + ' ws=' + windows.size + ' t=' + Date.now() + ' destroyed=' + win.isDestroyed() + ' shown=' + win.isVisible() + ' stack=' + new Error().stack.replace(/\n/g, ' << '));
       this.finalSnapshot = this.snapshot();
       this.persistTabsNow();
       this.detachChrome();
     });
-    win.on('closed', () => { console.log('[DBG] closed ws=' + windows.size); this.release(); });
+    win.on('closed', () => this.release());
 
     // The window is the launch: show it before the session, the bar or a page
     // exists, so nothing on the slow path can hold the first paint.
@@ -387,8 +385,13 @@ class Browser {
   }
 
   release() {
-    console.log('[DBG] release tabs=' + this.tabs.size + ' ws=' + windows.size);
-    for (const tab of this.tabs.values()) tab.view?.webContents.close();
+    // The window is already gone here, and its tab views went with it: closing
+    // a destroyed webContents throws, which would abort this handler and leave
+    // a dead Browser in `windows` for every later show request to focus.
+    for (const tab of this.tabs.values()) {
+      const contents = tab.view?.webContents;
+      if (contents && !contents.isDestroyed()) contents.close();
+    }
     this.tabs.clear();
     this.activeTabId = null;
     clearTimeout(this.persistTimer);
@@ -409,17 +412,15 @@ class Browser {
     this.pendingBar = null;
     this.win = undefined;
 
-    console.log('[DBG] release cleared, remaining=' + (windows.size - 1));
     windows.delete(this);
     // Closing the last window leaves its tabs on disk, so a resident relaunch
     // (or the next cold start) opens what the user was just looking at.
     remembered = windows.size ? null : this.finalSnapshot;
-    console.log('[DBG] release remembered=' + JSON.stringify(remembered && remembered.tabs));
     persistState();
   }
 
   focus() {
-    if (!this.win) return;
+    if (!this.win || this.win.isDestroyed()) return;
     if (this.win.isMinimized()) this.win.restore();
     this.win.focus();
   }
@@ -447,8 +448,15 @@ class Browser {
 
   snapshot() {
     return {
-      bounds: this.win ? this.win.getBounds() : this.saved.bounds,
-      tabs: [...this.tabs.values()].map((tab) => tab.view?.webContents.getURL() || tab.url || HOME),
+      bounds: this.win && !this.win.isDestroyed() ? this.win.getBounds() : this.saved.bounds,
+      // A tab whose renderer is gone has no URL to read, and asking a destroyed
+      // webContents throws. The tab's last recorded url still names the page,
+      // and this runs while the window closes: a throw here keeps it open.
+      tabs: [...this.tabs.values()].map((tab) =>
+        tab.view?.webContents.isDestroyed() === false
+          ? tab.view.webContents.getURL() || tab.url || HOME
+          : tab.url || HOME,
+      ),
       activeTab: [...this.tabs.keys()].indexOf(this.activeTabId),
       sidebar: this.sidebarVisible,
     };
@@ -642,8 +650,9 @@ class Browser {
     const id = this.nextTabId++;
     const tab = { id, view: null, title: '', url };
     this.tabs.set(id, tab);
+    // activateTab already repaints the list; only a background tab needs it.
     if (activate) this.activateTab(id);
-    this.updateSidebar();
+    else this.updateSidebar();
     this.persistTabs();
     if (openBar) this.showBar();
     return tab;
@@ -656,7 +665,9 @@ class Browser {
     if (previous && previous.id !== id && previous.view) this.win.contentView.removeChildView(previous.view);
     this.activeTabId = id;
     const view = this.tabView(tab);
-    this.win.contentView.addChildView(view);
+    // Bottom of the stack: the sidebar and the chrome draw over the page, so a
+    // page added here never covers the view floating above it.
+    this.win.contentView.addChildView(view, 0);
     this.layout();
     view.webContents.focus();
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
@@ -670,7 +681,9 @@ class Browser {
     this.tabs.delete(id);
     if (tab.view) {
       this.win.contentView.removeChildView(tab.view);
-      tab.view.webContents.close();
+      // A tab whose renderer crashed still has its view, and closing a
+      // destroyed webContents throws — which used to stop the close below.
+      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     }
 
     if (this.activeTabId === id) {
@@ -704,10 +717,9 @@ class Browser {
   // ---------------------------------------------------------------- sidebar
 
   /**
-   * Show or hide the sidebar. The page takes its new width in one step — before
-   * it is covered on the way in, after it is uncovered on the way out — and
-   * only the sidebar view travels in between, so a toggle lays the page out
-   * once instead of once per frame.
+   * Show or hide the sidebar. It floats over the page, so a toggle attaches or
+   * detaches one view and lays nothing else out: no page resize, no animation
+   * frames, nothing on the main thread between the key and the picture.
    */
   setSidebar(visible) {
     if (visible === this.sidebarVisible) return;
@@ -716,55 +728,23 @@ class Browser {
     if (visible) {
       const view = this.ensureSidebar();
       if (!this.sidebarAttached) {
-        // Attached off the left edge: it slides in from there rather than
-        // appearing on a page that has not made room yet.
-        this.sidebarSlide = -SIDEBAR_WIDTH;
+        // Added last so it draws over the page: views stack in the order they
+        // are added, and the page goes in at the bottom every time a tab opens.
         this.win.contentView.addChildView(view);
         this.sidebarAttached = true;
       }
-      this.sidebarWidth = SIDEBAR_WIDTH;
-      this.layout();
+    } else if (this.sidebarAttached) {
+      this.win.contentView.removeChildView(this.sidebar);
+      this.sidebarAttached = false;
     }
-    this.animateSidebar(visible ? 0 : -SIDEBAR_WIDTH, () => {
-      if (!visible) {
-        this.sidebarWidth = 0;
-        this.layout();
-        if (this.sidebarAttached) {
-          this.win.contentView.removeChildView(this.sidebar);
-          this.sidebarAttached = false;
-          this.layout();
-        }
-      }
-      mark(`sidebar ${visible ? 'in' : 'out'}: ${this.pageLayouts} page layout(s)`);
-    });
+    this.layout();
+    mark(`sidebar ${visible ? 'in' : 'out'}: ${this.pageLayouts} page layout(s)`);
     this.persistTabs();
-  }
-
-  /**
-   * Slide the sidebar view over the page. Its width never changes and the page
-   * keeps its bounds for the whole slide, so no frame of it reflows anything:
-   * the compositor moves a rectangle it already has.
-   */
-  animateSidebar(target, done) {
-    const from = this.sidebarSlide;
-    clearInterval(this.sidebarTimer);
-    this.sidebarTimer = null;
-    const started = Date.now();
-    this.sidebarTimer = setInterval(() => {
-      const t = Math.min(1, (Date.now() - started) / SIDEBAR_ANIM_MS);
-      this.sidebarSlide = from + (target - from) * (1 - (1 - t) ** 3);
-      this.layout();
-      if (t < 1) return;
-      clearInterval(this.sidebarTimer);
-      this.sidebarTimer = null;
-      done?.();
-    }, 16);
   }
 
   // ------------------------------------------------------------------- keys
 
   pressShortcut(input) {
-    if (input.type === 'keyDown') console.log('[DBG] key ' + JSON.stringify({k: input.key, c: input.code, m: input.modifiers, a: input.isAutoRepeat}));
     if (this.panelVisible && this.panelEditing) return false;
     // With a list under the bar, ctrl+j/ctrl+k walk it; with the list empty
     // they fall through to the tab bindings below, as they do on the page.
@@ -825,7 +805,6 @@ class Browser {
       return true;
     }
     if (matchesAny(input, keys.closeTab)) {
-      console.log('[DBG] closeTab key input=' + JSON.stringify(input) + ' tabs=' + this.tabs.size);
       if (this.activeTab()) this.closeTab(this.activeTabId);
       return true;
     }
@@ -917,10 +896,7 @@ class Browser {
 // ------------------------------------------------------------------ windows
 
 function createWindow(snapshot = {}) {
-  console.log('[DBG] createWindow from=' + JSON.stringify(snapshot.tabs) + ' at ' + new Error().stack.split('\n').slice(2,5).join(' | '));
-  const result = new Browser(snapshot).open();
-  result.catch((err) => console.log('[DBG] BUILD FAILED: ' + (err && err.stack)));
-  return result;
+  return new Browser(snapshot).open();
 }
 
 /**
@@ -948,8 +924,7 @@ function startShowRequestWatch() {
       } catch {
         // already consumed
       }
-      console.log('[DBG] show.request consumed');
-      showWindow().catch((err) => console.log(`[tbrowser] reopen failed: ${err.message}`));
+      showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
     });
   } catch (err) {
     console.warn(`[tbrowser] cannot watch for show requests: ${err.message}`);
@@ -967,6 +942,25 @@ function controlTarget() {
     : path.join(app.getPath('userData'), 'show.sock');
 }
 
+/**
+ * `tbrowser --quit` ends the running instance. Every keybinding lives inside a
+ * window, so a resident process parked with no window on screen could not be
+ * closed again short of killing it; this asks it over the same channel a launch
+ * uses. With nothing running there is nothing to ask, and the command succeeds.
+ */
+function quitRunningInstance() {
+  const socket = net.createConnection(controlTarget());
+  const finish = () => {
+    socket.destroy();
+    process.exit(0);
+  };
+  socket.setTimeout(500, finish);
+  socket.on('error', finish);
+  socket.on('end', finish);
+  socket.on('data', () => {});
+  socket.on('connect', () => socket.end('quit\n'));
+}
+
 function startControlServer() {
   if (controlServer) return;
   const target = controlTarget();
@@ -981,9 +975,12 @@ function startControlServer() {
     socket.setEncoding('utf8');
     socket.on('error', () => {});
     socket.once('data', (message) => {
-      console.log('[DBG] pipe msg=' + String(message).trim());
-      if (String(message).trim() === 'show') {
-        showWindow().catch((err) => console.log(`[tbrowser] reopen failed: ${err.message}`));
+      const request = String(message).trim();
+      if (request === 'show') {
+        showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+      } else if (request === 'quit') {
+        // Answer first: the reply has to leave before the process goes.
+        setImmediate(() => app.quit());
       }
       socket.end('ok\n');
     });
@@ -1007,9 +1004,16 @@ function startControlServer() {
 
 /** Focus the window in front, or build the ones the last run left behind. */
 function showWindow() {
-  console.log('[DBG] showWindow ws=' + windows.size + ' creating=' + Boolean(creatingWindow) + ' at ' + new Error().stack.split('\n').slice(2,5).join(' | '));
+  // A Browser can outlive its window: a failed build, or a release that never
+  // ran, leaves one in this set with nothing on screen. Focusing it is a no-op
+  // and the request dies there, which is how a resident process ends up with
+  // no window and no way to ask for one — drop it and build a fresh window.
+  for (const window of windows) {
+    if (window.win && window.win.isDestroyed()) windows.delete(window);
+  }
   const existing = [...windows].pop();
   if (existing) {
+    if (!existing.win.isVisible()) existing.win.show();
     existing.focus();
     return Promise.resolve();
   }
@@ -1301,15 +1305,17 @@ function startConfigWatch() {
 
 // --------------------------------------------------------------- app startup
 
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
+// Checked before the lock: quitting is a request to whichever instance holds it,
+// including one parked with no window on screen.
+if (process.argv.includes('--quit')) {
+  quitRunningInstance();
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
     // A hidden launch only wants the daemon up; it must not pop a window.
     if (argv.includes('--hidden') || argv.includes('--daemon')) return;
-    console.log('[DBG] second-instance');
-    showWindow().catch((err) => console.log(`[tbrowser] reopen failed: ${err.message}`));
+    showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
   });
 
   app.whenReady().then(() => {
@@ -1336,6 +1342,5 @@ if (!gotLock) {
 // With the default resident daemon, closing the last window parks the process
 // instead of paying Electron's cold start on the next launch.
 app.on('window-all-closed', () => {
-  console.log('[DBG] window-all-closed resident=' + config?.resident);
   if (!config?.resident) app.quit();
 });
