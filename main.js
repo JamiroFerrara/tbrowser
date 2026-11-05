@@ -408,8 +408,9 @@ function takeWarmPage(url) {
     entry.activate();
     mark('warm used');
   }
-  // Replace it off the keystroke, so the next open of this favourite finds a
-  // page ready too. A failed page is replaced just the same.
+  // Re-read the choice off the keystroke: while this page sits in a tab it is
+  // not loaded a second time, and when it is closed or navigated away the pool
+  // takes it back.
   setImmediate(syncWarmPages);
   return entry;
 }
@@ -579,6 +580,12 @@ class Browser {
     this.layout();
     this.updateSidebar();
     mark('page created');
+    // The favourites kept ready load now, beside the bar: they are decoration
+    // for a later keystroke, so nothing this launch shows waits on them, and
+    // they do not wait on the bar's renderer either.
+    setImmediate(() => {
+      if (this.win) syncWarmPages();
+    });
     // Waited for last, so the pages start loading beside the bar instead of
     // behind it: the bar only holds the launch back if its own renderer is
     // slower than the page's, and nothing else waits on either.
@@ -592,9 +599,6 @@ class Browser {
       if (!this.panel) this.ensurePanel();
       warmChrome();
       warmTab();
-      // The favourites kept ready load last: they are decoration for a later
-      // keystroke, never part of this launch.
-      syncWarmPages();
     });
   }
 
@@ -1043,7 +1047,6 @@ class Browser {
     if (entry.done && Date.now() - entry.loadedAt > WARM_REFRESH_MS) {
       wc.reload();
     }
-    visited.record(tab.url, tab.title);
     if (attach) {
       if (previous && previous.webContents !== wc && !previous.webContents.isDestroyed()) {
         this.unwireTab(previous.webContents);
@@ -1065,8 +1068,14 @@ class Browser {
     if (tab.id === this.activeTabId) {
       if (this.win) this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
       this.layout();
+      // The bar had the keys until it hid, and the view it focused is the one
+      // just swapped out: the page takes the keystroke from here.
+      if (attach) wc.focus();
       this.persistTabs();
     }
+    // The visit is recorded last: it writes to disk, and the page is already
+    // on its way to the screen.
+    visited.record(tab.url, tab.title);
     this.updateSidebar();
     mark('tab warm');
     return view;
@@ -1161,7 +1170,7 @@ class Browser {
   tabView(tab) {
     if (tab.view) return tab.view;
     // A favourite kept ready is taken whole: the tab opens on a page that is
-    // already loaded, and the pool starts another one for the next time.
+    // already loaded instead of starting a load of its own.
     if (tab.url && tab.url !== HOME) {
       const warm = takeWarmPage(tab.url);
       if (warm) return this.adoptWarmPage(tab, warm);
