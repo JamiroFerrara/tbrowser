@@ -39,10 +39,11 @@
     user-select: none;
   }
   /* The artifact above the quote: a jolly roger drawn in ASCII by Joan G.
-     Stark (the `jgs` in its corner -- asciiart.eu, "jolly roger", 2015), the
-     one skull and crossbones the splash wears. It is its own element so the
-     quote below it can keep the terminal's size and line spacing while the
-     art carries its own: 50 columns wide, and no line of it is ever wrapped. */
+     Stark (asciiart.eu, "jolly roger", 2015), the one skull and crossbones the
+     splash wears. It is its own element so the quote below it can keep the
+     terminal's size and line spacing while the art carries its own: 42
+     columns wide, and no line of it is ever wrapped. The artist's border and
+     initials are cut from it -- the splash frames nothing and signs nothing. */
   #splash {
     display: flex;
     flex-direction: column;
@@ -75,23 +76,20 @@
   }
 </style>
 </head>
-<body><div id="splash"><pre id="skull" aria-hidden="true">.=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-.
-|                     ______                     |
-|                  .-"      "-.                  |
-|                 /            \                 |
-|     _          |              |          _     |
-|    ( \         |,  .-.  .-.  ,|         / )    |
-|     &gt; "=._     | )(__/  \__)( |     _.=" &lt;     |
-|    (_/"=._"=._ |/     /\     \| _.="_.="\_)    |
-|           "=._"(_     ^^     _)"_.="           |
-|               "=\__|IIIIII|__/="               |
-|              _.="| \IIIIII/ |"=._              |
-|    _     _.="_.="\          /"=._"=._     _    |
-|   ( \_.="_.="     `--------`     "=._"=._/ )   |
-|    &gt; _.="                            "=._ &lt;    |
-|   (_/   jgs                              \_)   |
-|                                                |
-'-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-='</pre><div id="quote"></div></div>
+<body><div id="splash"><pre id="skull" aria-hidden="true">                  ______                  
+               .-"      "-.               
+              /            \              
+  _          |              |          _  
+ ( \         |,  .-.  .-.  ,|         / ) 
+  &gt; "=._     | )(__/  \__)( |     _.=" &lt;  
+ (_/"=._"=._ |/     /\     \| _.="_.="\_) 
+        "=._"(_     ^^     _)"_.="        
+            "=\__|IIIIII|__/="            
+           _.="| \IIIIII/ |"=._           
+ _     _.="_.="\          /"=._"=._     _ 
+( \_.="_.="     `--------`     "=._"=._/ )
+ &gt; _.="                            "=._ &lt; 
+(_/                                    \_)</pre><div id="quote"></div></div>
 <script>
   /* The dashboard's quote pool (lua/plugins/snacks_dashboard.lua): one of them
      per new tab, in the same order and with the same line breaks. */

@@ -202,9 +202,9 @@ closing one leaves the other filling the window.
 ## New tab
 
 An empty tab is the splash the editor shows on a bare buffer: a jolly roger
-drawn in ASCII — Joan G. Stark's `jgs` line art, 50 columns of `<pre>` — over
-one Matrix quote, picked at random from the same list, centered in the window
-in the editor's face and catppuccin blue.
+drawn in ASCII — Joan G. Stark's line art, 42 columns of `<pre>`, her border
+and initials cut away — over one Matrix quote, picked at random from the same
+list, centered in the window in the editor's face and catppuccin blue.
 
 The skull flickers the way a CRT frame loses itself for a blink: an opacity
 animation in steps, so a splash left open costs a composited layer and not a
