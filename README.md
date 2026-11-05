@@ -233,6 +233,13 @@ starting the executable again.
   keybinding lives inside a window, so a parked daemon has no `Ctrl+Q` to
   press; this is how a hotkey or a script closes the browser for good. The
   request file works too: a `show.request` holding `quit` closes it.
+- `tbrowser.exe --no-ui` is the test launch: it builds its window and never
+  puts it on screen, so a smoke test — or an agent checking a change while you
+  keep working — takes no focus and stacks nothing in the taskbar. It runs
+  beside the resident browser instead of handing itself to it, so any number of
+  them run at once, and it runs on a throwaway profile: it starts from your
+  `config.json` and your installed extensions, shares no cookies, tabs or
+  history with the browser you use, and deletes the directory when it ends.
 
 A launcher that gets no answer can fall back to starting the app normally.
 

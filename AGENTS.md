@@ -73,6 +73,11 @@ git push origin main
 - Anything touching `main.js`, the views or extension loading needs the app
   actually started and the changed surface exercised before the work is called
   done.
+- `--no-ui` is how to start it while the user keeps working: the window is
+  built and kept off screen, and the run uses a throwaway profile, so a check
+  takes no focus and leaves their tabs alone. Use a visible launch only when
+  the change is what you have to see.
+  `dist/tbrowser-win32-x64/tbrowser.exe --no-ui`
 - Report what was run. Never describe a check as passing when it was not run,
   and never claim a visual or interactive behaviour was validated when only
   unit tests ran.

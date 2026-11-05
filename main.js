@@ -3,6 +3,7 @@
 const { app, BaseWindow, WebContentsView, session, ipcMain, Menu, shell, nativeTheme } = require('electron');
 const fs = require('node:fs');
 const net = require('node:net');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -28,6 +29,14 @@ const BLANK = 'about:blank'; // what state files written before the home page ho
 // instead of white.
 const CHROME_BG = { dark: '#1b1b1b', light: '#f5f5f5' };
 const chromeBg = () => (nativeTheme.shouldUseDarkColors ? CHROME_BG.dark : CHROME_BG.light);
+// `--no-ui` is the test launch: the window is built exactly as a real one and
+// never put on screen, so a run that only needs the browser up — a smoke test,
+// or an agent checking a change while the user works — takes no focus and
+// stacks nothing in the taskbar. It also runs beside the resident browser and
+// keeps a throwaway profile, so ten of them can run at once.
+const NO_UI = process.argv.includes('--no-ui');
+const SCRATCH_PREFIX = 'tbrowser-no-ui-';
+const STALE_PROFILE_MS = 24 * 60 * 60 * 1000;
 const PERSIST_DELAY = 250;
 const CASCADE = 32; // pixels a new window steps off the one it opened over
 const START = Date.now();
@@ -306,9 +315,12 @@ class Browser {
     win.on('closed', () => this.release());
 
     // The window is the launch: show it before the session, the bar or a page
-    // exists, so nothing on the slow path can hold the first paint.
-    win.show();
-    mark('window shown');
+    // exists, so nothing on the slow path can hold the first paint. A no-ui
+    // launch builds the same window and leaves it off screen: the build, the
+    // session and the page load are the part a test wants, and the window
+    // itself is the part it came to avoid.
+    if (!NO_UI) win.show();
+    mark(NO_UI ? 'window kept hidden' : 'window shown');
 
     return this.build();
   }
@@ -451,7 +463,9 @@ class Browser {
   }
 
   focus() {
-    if (!this.win || this.win.isDestroyed()) return;
+    // A test launch has no window on screen to focus, and asking the OS for one
+    // is how a hidden window ends up showing.
+    if (NO_UI || !this.win || this.win.isDestroyed()) return;
     if (this.win.isMinimized()) this.win.restore();
     this.win.focus();
   }
@@ -1085,6 +1099,8 @@ function showWindow() {
   }
   const existing = [...windows].pop();
   if (existing) {
+    // A no-ui run never brings a window back: not showing it is the whole point.
+    if (NO_UI) return Promise.resolve();
     if (!existing.win.isVisible()) existing.win.show();
     existing.focus();
     return Promise.resolve();
@@ -1377,23 +1393,73 @@ function startConfigWatch() {
 
 // --------------------------------------------------------------- app startup
 
-// Checked before the lock: quitting is a request to whichever instance holds it,
-// including one parked with no window on screen.
-if (process.argv.includes('--quit')) {
-  quitRunningInstance();
-} else if (!app.requestSingleInstanceLock()) {
-  app.quit();
-} else {
-  app.on('second-instance', (_event, argv) => {
-    // A hidden launch only wants the daemon up; it must not pop a window.
-    if (argv.includes('--hidden') || argv.includes('--daemon')) return;
-    showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+/**
+ * What a `--no-ui` launch runs on: a directory of its own, thrown away when it
+ * ends. The real profile is shared by one browser at a time, and a test that
+ * wrote the user's tabs, visits or cookies would blank the session they were
+ * reading — so the config travels (a test should obey the browser's settings)
+ * and the extensions are linked in (read-only, and a copy per run would be
+ * megabytes of unpacked extension), and nothing else does.
+ */
+function useScratchProfile() {
+  const real = app.getPath('userData');
+  const dir = path.join(os.tmpdir(), `${SCRATCH_PREFIX}${process.pid}`);
+  sweepScratchProfiles();
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    fs.copyFileSync(path.join(real, 'config.json'), path.join(dir, 'config.json'));
+  } catch {
+    // no config yet: the defaults loadConfig writes are what a fresh profile gets
+  }
+  try {
+    fs.symlinkSync(
+      path.join(real, 'extensions'),
+      path.join(dir, 'extensions'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+  } catch {
+    // nothing installed, or the link was refused: the vendored extensions still load
+  }
+  app.setPath('userData', dir);
+  // Windows keeps a Chromium profile locked for a moment after the process is
+  // gone, so this often fails; the sweep below is what clears the leftovers.
+  app.on('quit', () => {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // still held: tomorrow's sweep takes it
+    }
   });
+  console.log(`[tbrowser] no-ui: no window will be shown, profile ${dir}`);
+}
 
+/** Profiles a killed test run left behind: nothing else sweeps these. */
+function sweepScratchProfiles() {
+  let entries;
+  try {
+    entries = fs.readdirSync(os.tmpdir(), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(SCRATCH_PREFIX)) continue;
+    const dir = path.join(os.tmpdir(), entry.name);
+    try {
+      if (Date.now() - fs.statSync(dir).mtimeMs < STALE_PROFILE_MS) continue;
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // a profile still in use, or one Windows will not release yet
+    }
+  }
+}
+
+function startApp() {
   app.whenReady().then(() => {
     app.setAppUserModelId('com.tbrowser.app');
     Menu.setApplicationMenu(null);
-    startControlServer();
+    // The control channel is one per machine: a test copy that bound it would
+    // take every later launch, `--quit` included, from the browser behind it.
+    if (!NO_UI) startControlServer();
     configPath = path.join(app.getPath('userData'), 'config.json');
     config = loadConfig(app.getPath('userData'));
     try {
@@ -1411,8 +1477,30 @@ if (process.argv.includes('--quit')) {
   });
 }
 
+// Checked before the lock: quitting is a request to whichever instance holds it,
+// including one parked with no window on screen.
+if (process.argv.includes('--quit')) {
+  quitRunningInstance();
+} else if (NO_UI) {
+  // A test launch keeps its own process. Handing it to the resident browser
+  // would put the window a test asked not to see on screen, and would make two
+  // tests share one browser.
+  useScratchProfile();
+  startApp();
+} else if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    // A hidden launch only wants the daemon up; it must not pop a window.
+    if (argv.includes('--hidden') || argv.includes('--daemon')) return;
+    showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+  });
+  startApp();
+}
+
 // With the default resident daemon, closing the last window parks the process
-// instead of paying Electron's cold start on the next launch.
+// instead of paying Electron's cold start on the next launch. A test launch has
+// nothing to hand to: it exits with its window.
 app.on('window-all-closed', () => {
-  if (!config?.resident) app.quit();
+  if (NO_UI || !config?.resident) app.quit();
 });
