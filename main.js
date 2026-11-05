@@ -368,12 +368,13 @@ class Browser {
     this.saved = {};
 
     this.layout();
-    this.focusContent();
     this.updateSidebar();
     mark('page created');
     // The palette is where a launch starts typing, so the bar comes up and
     // takes the focus on every window, not only the empty one: a restored
-    // session lands with the caret in the bar instead of in the page.
+    // session lands with the caret in the bar instead of in the page. The page
+    // is not focused first — that call would land after the bar's and take the
+    // caret back.
     await barReady;
     this.showBar();
 
@@ -691,14 +692,17 @@ class Browser {
     const tab = { id, view: null, title: '', url };
     this.tabs.set(id, tab);
     // activateTab already repaints the list; only a background tab needs it.
-    if (activate) this.activateTab(id);
+    // A tab whose bar opens hands the focus to the bar instead of the page:
+    // two focus calls in a row let the page's land last, which left the caret
+    // in the new page rather than in the palette that had just opened.
+    if (activate) this.activateTab(id, { focus: !openBar });
     else this.updateSidebar();
     this.persistTabs();
     if (openBar) this.showBar();
     return tab;
   }
 
-  activateTab(id) {
+  activateTab(id, { focus = true } = {}) {
     const tab = this.tabs.get(id);
     if (!tab || !this.win) return;
     const previous = this.activeTab();
@@ -709,7 +713,7 @@ class Browser {
     // page added here never covers the view floating above it.
     this.win.contentView.addChildView(view, 0);
     this.layout();
-    view.webContents.focus();
+    if (focus) view.webContents.focus();
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
     this.updateSidebar();
     this.persistTabs();
