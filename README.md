@@ -214,7 +214,7 @@ Three directories are scanned at startup; each subfolder with a `manifest.json`
 is loaded unpacked:
 
 - `extensions/` — next to the app (source checkouts)
-- `vendor/` — bundled Vimium fork
+- `vendor/` — bundled extensions (Vimium, uBlock Origin, Dark Reader)
 - `%APPDATA%\tbrowser\extensions` (Linux: `~/.config/tbrowser/extensions`) —
   use this for a packaged install, where the app directory may be read-only
 
@@ -259,6 +259,22 @@ side in `:settings` if you want Vimium to have it.
 
 Vimium C crashes the same way (`chrome.windows.onFocusChanged`); if you want it,
 apply the same shim to its manifest's `background.service_worker`.
+
+### Dark Reader
+
+`vendor/dark-reader` is Dark Reader 4.9.134 with a small shim
+(`background/tbrowser-compat.js`) loaded as its service worker. Electron's
+`chrome.extension` has no `isAllowedFileSchemeAccess`, and Dark Reader's settings
+payload waits on that callback, so its popup sat on "Loading, please wait"
+forever and the extension could not be configured. The shim answers it (`false`,
+because Electron gives extensions no access to `file://` URLs) and then loads
+the real worker.
+
+Pages are restyled as they load — `http(s)` pages only, for the same file-access
+reason. The extension's card in `:extensions` has its **Settings** button, which
+opens the on/off switch, site list, brightness and filter mode in a tab. Dark
+Reader's own keyboard shortcuts come from `chrome.commands`, which Electron does
+not implement, so they do not fire.
 
 ### uBlock Origin
 
