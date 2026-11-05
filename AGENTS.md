@@ -16,7 +16,7 @@ is the user-facing description — this file is how to change the thing.
 - `vendor/vimium` — patched Vimium 2.4.2 (see README)
 - `test/` — `node --test` suites
 
-## The two standing rules
+## The three standing rules
 
 **1. Every change is installed in the system, not just written.**
 
@@ -66,6 +66,30 @@ git push origin main
   extensions and is ignored too.
 - Never force-push and never rewrite pushed history.
 
+**3. Never put a window on the user's desktop to test.**
+
+Several agents work this repo at once, and every window a check opens is one
+the user did not ask for, stealing the focus from whatever they are doing. A
+test launch is `--no-ui`:
+
+```bash
+dist/tbrowser-win32-x64/tbrowser.exe --no-ui
+```
+
+The window is built exactly as a normal launch builds it and never shown, so
+the session, the extensions, the ad blocker and the page all still run. The
+run also keeps its own throwaway profile and skips the single-instance lock,
+so any number of them run beside the user's browser without touching their
+tabs, visits or cookies, and a killed one leaves nothing behind that the next
+start does not sweep.
+
+Start a visible instance only when what you have to check *is* the window —
+and close it as soon as you have looked:
+
+```bash
+taskkill /IM tbrowser.exe /F
+```
+
 ## Verification
 
 - `npm test` runs the command-parsing and config/keybinding suites. It does not
@@ -73,11 +97,7 @@ git push origin main
 - Anything touching `main.js`, the views or extension loading needs the app
   actually started and the changed surface exercised before the work is called
   done.
-- `--no-ui` is how to start it while the user keeps working: the window is
-  built and kept off screen, and the run uses a throwaway profile, so a check
-  takes no focus and leaves their tabs alone. Use a visible launch only when
-  the change is what you have to see.
-  `dist/tbrowser-win32-x64/tbrowser.exe --no-ui`
+- Start it with `--no-ui` (rule 3), not with a window on the user's screen.
 - Report what was run. Never describe a check as passing when it was not run,
   and never claim a visual or interactive behaviour was validated when only
   unit tests ran.
