@@ -17,7 +17,6 @@ const BAR_HEIGHT = 44;
 const BAR_ROW = 32;
 const BAR_PAD = 8;
 const SIDEBAR_WIDTH = 220;
-const SIDEBAR_ANIM_MS = 160;
 const PARTITION = 'persist:tbrowser';
 // The new-tab page is a local file, not about:blank: Chromium paints a blank
 // document white whatever the theme, so the first thing a launch showed was a
@@ -245,11 +244,6 @@ class Browser {
     this.barLoaded = false;
     this.pendingBar = null;
     this.sidebarAttached = false;
-    this.sidebarWidth = this.sidebarVisible ? SIDEBAR_WIDTH : 0;
-    // Where the sidebar view itself sits, in pixels from its resting place:
-    // 0 when it is fully in, -SIDEBAR_WIDTH when it is fully out.
-    this.sidebarSlide = 0;
-    this.sidebarTimer = null;
     this.pageLayouts = 0;
 
     this.persistTimer = null;
@@ -397,7 +391,6 @@ class Browser {
     for (const tab of this.tabs.values()) tab.view?.webContents.close();
     this.tabs.clear();
     this.activeTabId = null;
-    clearInterval(this.sidebarTimer);
     clearTimeout(this.persistTimer);
     this.bar = undefined;
     this.barEntry = undefined;
@@ -484,30 +477,25 @@ class Browser {
     if (!this.win) return;
     const [width, height] = this.win.getContentSize();
     const barPixels = this.barVisible ? Math.round(this.barHeight) : 0;
-    const sideWidth = Math.max(0, Math.round(this.sidebarWidth));
-    const contentWidth = Math.max(0, width - sideWidth);
     const contentHeight = Math.max(0, height - barPixels);
 
-    // The sidebar keeps its full width and travels in from the window's left
-    // edge over the page: its own contents are clipped rather than reflowed,
-    // and the page is only ever placed at the widths it settles at.
+    // The page always gets the whole window: the sidebar sits over it, so
+    // opening or closing the sidebar never resizes the page or reflows what is
+    // on it. Only the browser's own chrome keeps clear of the sidebar.
     if (this.sidebarAttached && this.sidebar) {
-      place(this.sidebar, {
-        x: sideWidth - SIDEBAR_WIDTH + Math.round(this.sidebarSlide),
-        y: 0,
-        width: SIDEBAR_WIDTH,
-        height,
-      });
+      place(this.sidebar, { x: 0, y: 0, width: SIDEBAR_WIDTH, height });
     }
     const tab = this.activeTab();
-    if (tab?.view && place(tab.view, { x: sideWidth, y: 0, width: contentWidth, height: contentHeight })) {
+    if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
       this.pageLayouts += 1;
     }
+    const chromeX = this.sidebarVisible ? SIDEBAR_WIDTH : 0;
+    const chromeWidth = Math.max(0, width - chromeX);
     if (this.panelVisible && this.panel) {
-      place(this.panel, { x: sideWidth, y: 0, width: contentWidth, height: contentHeight });
+      place(this.panel, { x: chromeX, y: 0, width: chromeWidth, height: contentHeight });
     }
     if (this.barVisible && this.bar) {
-      place(this.bar, { x: sideWidth, y: height - barPixels, width: contentWidth, height: barPixels });
+      place(this.bar, { x: chromeX, y: height - barPixels, width: chromeWidth, height: barPixels });
     }
   }
 
