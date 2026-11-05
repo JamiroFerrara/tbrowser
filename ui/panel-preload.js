@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('panel', {
   get: (page) => ipcRenderer.invoke('panel:get', page),
   rescan: () => ipcRenderer.invoke('panel:rescan'),
+  extension: (request) => ipcRenderer.invoke('panel:extension', request),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
   close: () => ipcRenderer.send('panel:close'),
   setEditing: (editing) => ipcRenderer.send('panel:editing', editing),

@@ -19,6 +19,10 @@ const ACTION_LABELS = {
   nextSuggestion: 'Next suggestion',
   prevSuggestion: 'Previous suggestion',
   toggleSidebar: 'Toggle sidebar',
+  workspaces: 'Workspace picker',
+  splitVertical: 'Split side by side',
+  splitHorizontal: 'Split stacked',
+  focusPane: 'Move between panes',
   devtools: 'Developer tools',
   newWindow: 'New window',
   closeWindow: 'Close window',
@@ -38,35 +42,110 @@ function actionLabel(action) {
 
 // ---------------------------------------------------------------- extensions
 
+let extStatus;
+
+function setExtStatus(text, kind) {
+  if (!extStatus) return;
+  extStatus.className = `status ${kind ?? ''}`.trim();
+  extStatus.textContent = text;
+}
+
+function extensionButton(text, onClick, className = '') {
+  const button = el('button', className, text);
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+/** One card: what the extension is, what it may do, and what you can do to it. */
 function extCard(extension) {
-  const card = el('div', 'card');
-  card.append(
-    el('h2', '', `${extension.name} ${extension.version ?? ''}`.trim()),
-    el('div', 'meta', extension.path ?? ''),
-  );
+  const card = el('div', `card ext${extension.enabled ? '' : ' off'}`);
+
+  const icon = el('div', 'ext-icon');
+  if (extension.icon) {
+    const image = new Image();
+    image.src = extension.icon;
+    image.alt = '';
+    icon.append(image);
+  } else {
+    icon.textContent = (extension.name || '?').trim().charAt(0).toUpperCase() || '?';
+  }
+
+  const body = el('div', 'ext-body');
+  const heading = el('h2', '', extension.name || 'Untitled extension');
+  if (extension.version) heading.append(el('span', 'ext-version', extension.version));
+  body.append(heading);
+  if (extension.description) body.append(el('p', 'ext-desc', extension.description));
+  body.append(el('div', 'meta', extension.id ? `${extension.id} · ${extension.path}` : extension.path));
+  if (extension.permissions.length) {
+    body.append(el('div', 'ext-perms', `Can use: ${extension.permissions.join(', ')}`));
+  }
+
+  const actions = el('div', 'row');
+  const toggle = el('label', 'switch');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = extension.enabled;
+  box.addEventListener('change', () => {
+    box.disabled = true;
+    runExtensionAction(extension, box.checked ? 'enable' : 'disable');
+  });
+  toggle.append(box, el('span', '', extension.enabled ? 'On' : 'Off'));
+  actions.append(toggle);
+  if (extension.enabled) {
+    if (extension.options) actions.append(extensionButton('Settings', () => runExtensionAction(extension, 'options')));
+    actions.append(extensionButton('Reload', () => runExtensionAction(extension, 'reload')));
+  }
+  actions.append(extensionButton('Folder', () => runExtensionAction(extension, 'folder')));
+  body.append(actions);
+
+  card.append(icon, body);
   return card;
+}
+
+async function runExtensionAction(extension, action) {
+  if (extStatus) extStatus.textContent = '';
+  const result = await window.panel.extension({ action, id: extension.id, path: extension.path });
+  if (!result.ok) {
+    renderExtensions(result);
+    setExtStatus(result.error, 'err');
+    return;
+  }
+  const name = extension.name || 'Extension';
+  renderExtensions(result);
+  const messages = {
+    enable: `${name} is on.`,
+    disable: `${name} is off — it stays installed, and comes back on when you switch it on.`,
+    reload: `${name} reloaded.`,
+    folder: `Opened the folder for ${name}.`,
+  };
+  if (messages[action]) setExtStatus(messages[action], 'ok');
 }
 
 function renderExtensions(data) {
   title.textContent = 'Extensions';
-  sub.textContent = 'Loaded unpacked extensions. Drop a folder into one of these directories and rescan.';
+  const off = data.extensions.length - data.loaded;
+  sub.textContent = `${data.loaded} of ${data.extensions.length} on${off ? `, ${off} switched off` : ''}. Turn one off to stop it running; its settings page opens in a tab.`;
 
-  const actions = el('div', 'row');
+  const toolbar = el('div', 'row');
   const rescan = el('button', '', 'Rescan');
+  rescan.title = 'Look in the extension folders again';
   rescan.addEventListener('click', async () => {
     rescan.disabled = true;
-    const fresh = await window.panel.rescan();
-    renderExtensions(fresh);
+    renderExtensions(await window.panel.rescan());
   });
-  actions.append(rescan);
+  toolbar.append(rescan);
   for (const dir of data.dirs) {
     const open = el('button', '', dir.split(/[\\/]/).pop());
     open.title = dir;
     open.addEventListener('click', () => window.panel.openPath(dir));
-    actions.append(open);
+    toolbar.append(open);
   }
-  content.replaceChildren(actions, ...data.extensions.map(extCard));
-  if (!data.extensions.length) content.append(el('p', 'meta', 'No extensions loaded.'));
+  extStatus = el('div', 'status');
+  const cards = data.extensions.map(extCard);
+  content.replaceChildren(toolbar, ...cards, extStatus);
+  if (!data.extensions.length) {
+    content.append(el('p', 'meta', 'No extensions found. Drop a folder into one of the extension directories, then rescan.'));
+  }
 }
 
 // ------------------------------------------------------------------ settings

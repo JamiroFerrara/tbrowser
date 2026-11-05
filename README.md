@@ -53,6 +53,9 @@ platform-specific. WSL users: run these commands from Windows, or package with
 | `Ctrl+9` | go to the last tab |
 | `Ctrl+R`, `F5` | reload |
 | `Alt+Left` / `Alt+Right` | back / forward |
+| `Alt+P` | open the workspace picker |
+| `Alt+S` / `Alt+Shift+S` | split side by side / stacked |
+| `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move between the two panes |
 | `F12`, `Ctrl+Shift+I` | DevTools |
 | `Ctrl+N` | new window |
 | `Ctrl+Shift+W` | close window |
@@ -77,6 +80,10 @@ Everything is rebindable in `config.json` (created on first run):
     "reload": ["ctrl+r", "f5"],
     "back": ["alt+left"],
     "forward": ["alt+right"],
+    "workspaces": ["alt+p"],
+    "splitVertical": ["alt+s"],
+    "splitHorizontal": ["alt+shift+s"],
+    "focusPane": ["alt+h", "alt+j", "alt+k", "alt+l"],
     "devtools": ["f12", "ctrl+shift+i"],
     "newWindow": ["ctrl+n"],
     "closeWindow": ["ctrl+shift+w"],
@@ -99,6 +106,8 @@ back to it — the text you had typed stays where it was.
 
 While you type, a list grows up out of the bar and narrows with you:
 
+- `🗂` the tabs already open, the focused one first; `Enter` switches to the tab
+  instead of loading its address again
 - `🕘` pages you have visited, ranked by frecency, `Enter` on the first one
 - `★` favourites, added and removed with `:fav`
 - `🔍` the web search, last row, so a query with no match still searches —
@@ -131,8 +140,53 @@ Commands:
 | `:fav` | add or remove the current page from favourites |
 | `:extensions` (`:ext`) | loaded extensions and their settings pages |
 | `:settings` (`:config`) | edit `config.json` |
+| `:ws` | open the workspace picker |
+| `:ws save [name]` | keep this window's tabs under a name (the page's host by default) |
+| `:ws open <name>` | swap this window's tabs for that saved set |
+| `:ws delete <name>` | forget a saved set |
+| `:tab <id>` | switch to a tab by the id the picker uses |
+| `:vsplit` / `:split` / `:only` | split side by side / stacked / back to one page |
 
-Single view, no tabs: `target=_blank` links open in the same page.
+A `target=_blank` link opens in a new tab; a page asking for a sized popup —
+a sign-in — opens in a real window so the login can finish.
+
+## Workspaces
+
+A workspace is a named set of tabs and the one that had focus, saved in
+`workspaces.json` beside `config.json`. It is the browser's answer to a tmux
+session: `Alt+P` lists them, `Enter` switches the window to one, and switching
+back is another `Alt+P`.
+
+- **Switching keeps what you had.** A window showing a named workspace writes
+  its tabs back into it before switching, so a workspace is never lost by
+  leaving it. A window that was never named puts its tabs in a single rolling
+  `last session` slot, so `Alt+P` always has a way back.
+- **Saving.** `:ws save work` names the current tabs `work`. `:ws save` with no
+  argument names them after the page you are on. Saving an existing name
+  replaces it, and closing a window updates the workspace it was showing.
+- **What is stored.** The tab addresses in order, which tab had focus, and any
+  split. Titles and scroll positions are not stored; the pages load again.
+- **Grouping is open.** A workspace is a flat list, so the same site can appear
+  in two of them and twice in one. Whether a site should instead be allowed in
+  only one place is not decided yet.
+
+## Splits
+
+`Alt+S` puts the current tab and the tab you were on before it side by side;
+`Alt+Shift+S` stacks them. Pressing the same key again closes the split,
+pressing the other turns it. `Alt+H`/`Alt+L` move between the two panes, and
+so do `Alt+J`/`Alt+K`; clicking a page focuses its pane. The command bar, the
+keys and the sidebar act on the focused pane, and the sidebar marks it.
+
+The split opens with a short slide, not a jump. The two panes are ordinary
+tabs: both stay in the tab list and in the sidebar, and closing one leaves the
+other filling the window.
+
+- The page order is fixed (first tab left or top), so focusing a pane never
+  swaps the pictures.
+- A split with one tab creates a second, empty one to sit beside it.
+- The split is remembered in `state.json`, so a restored window opens with it.
+- `:only` closes it without closing either tab.
 
 ## New tab
 
@@ -162,6 +216,15 @@ npm run add-ext -- <extension-id>
 For a packaged install, extract the folder into the user extensions directory
 instead (the installer writes to `extensions/` next to the app).
 
+`:extensions` is the page that manages them: each card shows the icon, version,
+description and the permissions it asked for, with a switch that turns the
+extension on or off without uninstalling it, a **Settings** button that opens
+the extension's own options page in a tab, and **Reload** for a folder you just
+rebuilt. Switching one off unloads it for the running browser and remembers the
+folder in `extensions.json` next to `config.json`, so it stays off at the next
+launch too. Turning uBlock Origin off hands blocking back to the built-in
+engine.
+
 ### Vimium
 
 `vendor/vimium` is Vimium 2.4.2 with a compatibility shim
@@ -171,6 +234,17 @@ instead (the installer writes to `extensions/` next to the app).
 The shim stubs those APIs so the MV3 service worker boots; content-script features
 (hints, scrolling, find, marks, omnibar, copy URL) work. Tab-management commands
 (`x`, `T`, `g$`, ...) are limited because Electron has no tab management.
+
+It also points `chrome.storage.session` at `chrome.storage.local`, because
+Electron refuses the session area to content scripts. Vimium keeps the compiled
+key mappings there, so without it every page ran Vimium's defaults and silently
+ignored settings imported from Brave — the fork would look like it had not
+loaded them at all.
+
+One collision is left by design: a key bound in `config.json` is taken before
+the page sees it, so a Vimium mapping on the same key never fires. `Ctrl+P` is
+the browser's search key and therefore shadows Vimium's `<c-p>`; rebind either
+side in `:settings` if you want Vimium to have it.
 
 Vimium C crashes the same way (`chrome.windows.onFocusChanged`); if you want it,
 apply the same shim to its manifest's `background.service_worker`.
@@ -258,7 +332,7 @@ npm start         # run from source (dev)
 Layout:
 
 - `main.js` — windows and their views, key routing, state
-- `lib/` — command parsing, keybinding matcher/config, extension loading, adblock
+- `lib/` — command parsing, keybinding matcher/config, workspaces, extensions, adblock
 - `ui/` — command-bar page + preload
 - `scripts/install-extension.mjs` — CRX/zip unpacker for `extensions/`
 - `vendor/vimium` — patched Vimium fork

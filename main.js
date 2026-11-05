@@ -9,7 +9,7 @@ const { pathToFileURL } = require('node:url');
 
 const { parseInput, parseCommand } = require('./lib/commands');
 const { DEFAULTS, loadConfig, normalize, compileKeybindings, matchesAny, parseBindingText } = require('./lib/config');
-const { loadExtensions } = require('./lib/extensions');
+const { loadExtensions, findExtensions, readDisabledExtensions, writeDisabledExtensions } = require('./lib/extensions');
 const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
 const { suggestions } = require('./lib/suggest');
@@ -89,6 +89,7 @@ let visited; // visited pages + favourites, ranked by frecency
 let workspaces; // named tab sets, the browser's sessions
 let keys; // keybindings pre-parsed once
 let extensionDirs = [];
+let disabledExtensions = []; // folders the extensions page switched off, by path
 let sessionReady = null;
 let creatingWindow = null;
 let controlServer = null;
@@ -657,8 +658,16 @@ class Browser {
     const viewA = this.tabView(first);
     const viewB = this.tabView(second);
     this.split = { a, b, orientation };
-    this.win.contentView.addChildView(viewA, 0);
-    this.win.contentView.addChildView(viewB, 0);
+    // Electron refuses to add a view that is already a child, so only the
+    // pane that is not on screen yet is added.
+    if (!first.attached) {
+      this.win.contentView.addChildView(viewA, 0);
+      first.attached = true;
+    }
+    if (!second.attached) {
+      this.win.contentView.addChildView(viewB, 0);
+      second.attached = true;
+    }
     this.splitProgress = animate ? 0 : 1;
     this.layout();
     if (animate) this.animateSplit();
@@ -702,12 +711,13 @@ class Browser {
     this.splitAnim = null;
     const otherId = this.activeTabId === this.split.a ? this.split.b : this.split.a;
     const other = this.tabs.get(otherId);
-    if (other?.view) {
+    if (other?.view && other.attached) {
       try {
         this.win.contentView.removeChildView(other.view);
       } catch {
         // the view is already gone with the window
       }
+      other.attached = false;
     }
     this.split = null;
     this.splitProgress = 1;
@@ -717,7 +727,7 @@ class Browser {
   }
 
   /**
-   * Focus the other pane without moving it. Electrons lets the click do this
+   * Focus the other pane without moving it. Electron lets the click do this
    * on its own (`wireTab` listens for focus), and Alt+H/J/K/L do it from the
    * keyboard.
    */
@@ -768,10 +778,13 @@ class Browser {
     this.split = null;
     for (const tab of this.tabs.values()) {
       if (!tab.view) continue;
-      try {
-        this.win.contentView.removeChildView(tab.view);
-      } catch {
-        // the window is going away
+      if (tab.attached) {
+        try {
+          this.win.contentView.removeChildView(tab.view);
+        } catch {
+          // the window is going away
+        }
+        tab.attached = false;
       }
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     }
@@ -962,7 +975,7 @@ class Browser {
 
   createTab({ url = HOME, activate = true, openBar = false } = {}) {
     const id = this.nextTabId++;
-    const tab = { id, view: null, title: '', url };
+    const tab = { id, view: null, title: '', url, attached: false };
     this.tabs.set(id, tab);
     // activateTab already repaints the list; only a background tab needs it.
     // A tab whose bar opens hands the focus to the bar instead of the page:
@@ -990,12 +1003,16 @@ class Browser {
       const slot = previous && previous.id === this.split.a ? 'a' : 'b';
       if (previous && previous.id !== id && previous.view) {
         this.win.contentView.removeChildView(previous.view);
+        previous.attached = false;
       }
       this.previousTabId = previous?.id ?? null;
       this.split[slot] = id;
       this.activeTabId = id;
       const view = this.tabView(tab);
-      this.win.contentView.addChildView(view, 0);
+      if (!tab.attached) {
+        this.win.contentView.addChildView(view, 0);
+        tab.attached = true;
+      }
       this.layout();
       if (focus) view.webContents.focus();
       this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
@@ -1003,13 +1020,19 @@ class Browser {
       this.persistTabs();
       return;
     }
-    if (previous && previous.id !== id && previous.view) this.win.contentView.removeChildView(previous.view);
+    if (previous && previous.id !== id && previous.view) {
+      this.win.contentView.removeChildView(previous.view);
+      previous.attached = false;
+    }
     this.previousTabId = previous?.id ?? null;
     this.activeTabId = id;
     const view = this.tabView(tab);
     // Bottom of the stack: the sidebar and the chrome draw over the page, so a
     // page added here never covers the view floating above it.
-    this.win.contentView.addChildView(view, 0);
+    if (!tab.attached) {
+      this.win.contentView.addChildView(view, 0);
+      tab.attached = true;
+    }
     this.layout();
     if (focus) view.webContents.focus();
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
@@ -1024,7 +1047,10 @@ class Browser {
     const otherId = inSplit ? (this.split.a === id ? this.split.b : this.split.a) : null;
     this.tabs.delete(id);
     if (tab.view) {
-      this.win.contentView.removeChildView(tab.view);
+      if (tab.attached) {
+        this.win.contentView.removeChildView(tab.view);
+        tab.attached = false;
+      }
       // A tab whose renderer crashed still has its view, and closing a
       // destroyed webContents throws — which used to stop the close below.
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
@@ -1532,6 +1558,7 @@ function workspaceCommand(window, args) {
       const entry = workspaces.save(chosen, state);
       if (!entry) return 'the workspace needs a name';
       window.workspaceName = entry.name;
+      window.persistTabs();
       window.bar.webContents.send(
         'bar:notice',
         `saved workspace ${entry.name} · ${entry.tabs.length} tab${entry.tabs.length === 1 ? '' : 's'}`,
@@ -1541,7 +1568,10 @@ function workspaceCommand(window, args) {
     case 'delete': {
       if (!name) return 'delete which workspace?';
       if (!workspaces.remove(name)) return `no workspace "${name}"`;
-      if (window.workspaceName?.toLowerCase() === name.toLowerCase()) window.workspaceName = null;
+      if (window.workspaceName?.toLowerCase() === name.toLowerCase()) {
+        window.workspaceName = null;
+        window.persistTabs();
+      }
       window.bar.webContents.send('bar:notice', `deleted workspace ${name}`);
       return null;
     }
@@ -1575,6 +1605,7 @@ function switchWorkspace(window, entry) {
   if (!fresh) return `no workspace "${entry.name}"`;
   window.replaceTabs(fresh);
   window.workspaceName = fresh.name;
+  window.persistTabs();
   window.bar.webContents.send(
     'bar:notice',
     `workspace ${fresh.name} · ${fresh.tabs.length} tab${fresh.tabs.length === 1 ? '' : 's'}`,
@@ -1612,13 +1643,18 @@ ipcMain.on('bar:submit', (event, text) => {
  */
 ipcMain.handle('bar:suggest', (event, text) => {
   const window = ctxFor(event);
+  // A colon in the workspace picker means the user is typing a command, so
+  // the list turns back into the ordinary command list from that character on.
+  const typedColon = String(text ?? '').trim().startsWith(':');
+  const picker = window?.barMode === 'workspace' && !typedColon;
+  const mode = picker ? 'workspace' : window?.barMode === 'workspace' ? 'address' : window?.barMode;
   const items = suggestions(text, {
     history: visited.list(),
     favourites: visited.favourites(),
     searchUrl: config.searchUrl,
     tabs: window ? window.pickerTabs() : [],
     workspaces: workspaces ? workspaces.list() : [],
-    mode: window?.barMode,
+    mode,
   });
   if (window) {
     window.barListOpen = items.length > 0;
@@ -1639,7 +1675,7 @@ ipcMain.on('sidebar:action', (event, action) => {
 });
 
 ipcMain.handle('panel:get', (_event, page) => {
-  if (page === 'extensions') return { extensions: listExtensions(), dirs: extensionDirs };
+  if (page === 'extensions') return extensionsPayload();
   return { config, configPath, defaults: DEFAULTS, dirs: extensionDirs };
 });
 /**
@@ -1665,8 +1701,52 @@ ipcMain.handle('settings:save', (event, patch) => {
   return { ok: true, config };
 });
 ipcMain.handle('panel:rescan', async () => {
-  await loadExtensions(ses, extensionDirs);
-  return { extensions: listExtensions(), dirs: extensionDirs };
+  await loadExtensions(ses, extensionDirs, { skip: disabledExtensions });
+  refreshAdblockOwner();
+  return extensionsPayload();
+});
+/**
+ * One button on an extension card. The page sends what it clicked and the
+ * folder it belongs to; everything is done in the session here, and the whole
+ * list comes back so the card re-renders from the truth, not from the click.
+ */
+ipcMain.handle('panel:extension', async (event, request) => {
+  const window = ctxFor(event);
+  const action = String(request?.action ?? '');
+  const dir = String(request?.path ?? '');
+  const loaded =
+    ses.extensions.getExtension(String(request?.id ?? '')) ??
+    ses.extensions.getAllExtensions().find((extension) => path.resolve(extension.path) === path.resolve(dir));
+  try {
+    if (action === 'folder') {
+      shell.openPath(loaded?.path ?? dir);
+      return { ok: true, ...extensionsPayload() };
+    }
+    if (action === 'options') {
+      const url = loaded ? extensionOptionsUrl(loaded) : null;
+      if (!url) return { ok: false, error: 'This extension has no settings page.', ...extensionsPayload() };
+      window?.hideBar();
+      window?.closePanel();
+      window?.createTab({ url });
+      return { ok: true, ...extensionsPayload() };
+    }
+    if (action === 'enable' && !loaded && dir) {
+      await ses.extensions.loadExtension(dir);
+      setExtensionEnabled(dir, true);
+    } else if (action === 'disable' && loaded) {
+      const extensionDir = loaded.path;
+      ses.extensions.removeExtension(loaded.id);
+      setExtensionEnabled(extensionDir, false);
+    } else if (action === 'reload' && loaded) {
+      const extensionDir = loaded.path;
+      ses.extensions.removeExtension(loaded.id);
+      await ses.extensions.loadExtension(extensionDir);
+    }
+    refreshAdblockOwner();
+    return { ok: true, ...extensionsPayload() };
+  } catch (err) {
+    return { ok: false, error: err.message, ...extensionsPayload() };
+  }
 });
 ipcMain.on('panel:close', (event) => ctxFor(event)?.closePanel());
 ipcMain.on('panel:editing', (event, editing) => {
@@ -1680,13 +1760,143 @@ ipcMain.on('panel:open-path', (_event, target) => {
 
 // ------------------------------------------------------------ shared process
 
-function listExtensions() {
-  return ses.extensions.getAllExtensions().map((extension) => ({
-    id: extension.id,
-    name: extension.name,
-    version: extension.version,
-    path: extension.path,
-  }));
+/**
+ * The extensions page's model. A loaded extension answers for itself; a folder
+ * the user switched off (or one whose load failed) is read from its manifest,
+ * so it keeps its place in the list with its switch set to off.
+ */
+function extensionsPayload() {
+  const loadedPaths = new Set();
+  const loaded = ses.extensions.getAllExtensions().map((extension) => {
+    loadedPaths.add(path.resolve(extension.path));
+    return describeExtension(extension.path, extension);
+  });
+  const off = [];
+  for (const dir of extensionDirs) {
+    for (const extensionDir of findExtensions(dir)) {
+      if (loadedPaths.has(path.resolve(extensionDir))) continue;
+      off.push(describeExtension(extensionDir));
+    }
+  }
+  const extensions = [...loaded, ...off].sort((a, b) => a.name.localeCompare(b.name));
+  return { extensions, dirs: extensionDirs, loaded: loaded.length };
+}
+
+/** One card's worth of facts about an extension folder, loaded or not. */
+function describeExtension(extensionDir, extension) {
+  const manifest = extension?.manifest ?? readManifest(extensionDir);
+  const messages = readLocaleMessages(extensionDir, manifest);
+  const localize = (value) => {
+    const match = typeof value === 'string' ? /^__MSG_(.+)__$/.exec(value) : null;
+    return match ? (messages[match[1]]?.message ?? match[1]) : value;
+  };
+  return {
+    id: extension?.id ?? null,
+    name: localize(manifest?.name) ?? path.basename(extensionDir),
+    version: extension?.version ?? manifest?.version ?? '',
+    description: localize(manifest?.description) ?? '',
+    path: extensionDir,
+    enabled: Boolean(extension),
+    options: extension ? extensionOptionsUrl(extension) : null,
+    icon: extensionIcon(extensionDir, manifest),
+    permissions: extensionPermissions(manifest),
+  };
+}
+
+function readManifest(extensionDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** Chrome's `__MSG_name__` placeholders resolve against the extension's locale. */
+function readLocaleMessages(extensionDir, manifest) {
+  const locale = manifest?.default_locale;
+  if (!locale) return {};
+  try {
+    return JSON.parse(fs.readFileSync(path.join(extensionDir, '_locales', locale, 'messages.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function extensionOptionsUrl(extension) {
+  const page = extension.manifest?.options_ui?.page ?? extension.manifest?.options_page;
+  if (typeof page !== 'string' || !page) return null;
+  try {
+    return new URL(page, extension.url).href;
+  } catch {
+    return null;
+  }
+}
+
+/** The icon the card shows, inlined: a file:// page cannot load chrome-extension://. */
+function extensionIcon(extensionDir, manifest) {
+  const icons = manifest?.icons;
+  if (!icons || typeof icons !== 'object') return null;
+  const sizes = Object.keys(icons)
+    .map(Number)
+    .filter((size) => Number.isFinite(size))
+    .sort((a, b) => Math.abs(a - 48) - Math.abs(b - 48));
+  const chosen = icons[String(sizes[0])];
+  if (typeof chosen !== 'string') return null;
+  const root = path.resolve(extensionDir);
+  const file = path.resolve(root, ...chosen.split('/'));
+  if (file !== root && !file.startsWith(`${root}${path.sep}`)) return null;
+  try {
+    if (fs.statSync(file).size > 128 * 1024) return null;
+    return `data:image/png;base64,${fs.readFileSync(file).toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** What the extension asked the browser for, in the words the card shows. */
+function extensionPermissions(manifest) {
+  const declared = [
+    ...(Array.isArray(manifest?.permissions) ? manifest.permissions : []),
+    ...(Array.isArray(manifest?.host_permissions) ? manifest.host_permissions : []),
+  ];
+  const seen = new Set();
+  const list = [];
+  for (const item of declared) {
+    if (typeof item !== 'string') continue;
+    // Host patterns read as noise; the scheme and host are the part that says anything.
+    const name = item.includes('://') ? item.replace(/\/\*$/, '').replace(/\/$/, '') : item;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    list.push(name);
+  }
+  return list;
+}
+
+/** Keep the extension page's off list and the running session in step. */
+function setExtensionEnabled(extensionDir, enabled) {
+  const resolved = path.resolve(extensionDir);
+  const next = disabledExtensions.filter((dir) => dir !== resolved);
+  if (!enabled) next.push(resolved);
+  try {
+    disabledExtensions = writeDisabledExtensions(extensionStateFile(), next);
+  } catch (err) {
+    console.warn(`[tbrowser] could not save the extension list: ${err.message}`);
+    disabledExtensions = next;
+  }
+}
+
+function extensionStateFile() {
+  return path.join(app.getPath('userData'), 'extensions.json');
+}
+
+/**
+ * A blocking extension owns the session: while uBlock Origin is on, the
+ * built-in engine stays out; the moment it is switched off, the engine is what
+ * keeps pages clean.
+ */
+function refreshAdblockOwner() {
+  adblockExtension = ses.extensions.getAllExtensions().some((extension) => extension.name === 'uBlock Origin');
+  syncAdblock().catch((err) => console.warn(`[tbrowser] adblock switch failed: ${err.message}`));
 }
 
 /**
@@ -1704,7 +1914,8 @@ function prepareSession() {
       path.join(app.getPath('userData'), 'extensions'),
     ];
     fs.mkdirSync(extensionDirs[2], { recursive: true });
-    const extensions = await loadExtensions(ses, extensionDirs);
+    disabledExtensions = readDisabledExtensions(extensionStateFile());
+    const extensions = await loadExtensions(ses, extensionDirs, { skip: disabledExtensions });
     // uBlock Origin is vendored and does its own blocking through the same
     // webRequest hooks; the built-in engine only stands in for it when the
     // extension did not load.
@@ -1722,7 +1933,16 @@ function prepareSession() {
  * blocking extension that loaded owns the session, so the engine stays out.
  */
 async function syncAdblock() {
-  if (!ses || adblockExtension) return;
+  if (!ses) return;
+  // A blocking extension that loaded owns the session, so the engine stays out
+  // of its way — and steps back in when that extension is switched off.
+  if (adblockExtension) {
+    if (adblockBlocker) {
+      adblockBlocker.disableBlockingInSession(ses);
+      adblockBlocker = null;
+    }
+    return;
+  }
   if (config.adblock) {
     if (!adblockBlocker) adblockBlocker = await enableAdblock(ses, app.getPath('userData'));
     return;

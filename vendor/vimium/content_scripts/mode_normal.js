@@ -12,13 +12,21 @@ class NormalMode extends KeyHandlerMode {
 
     super.init(Object.assign(defaults, options));
 
+    // tbrowser: the background may not have compiled the mappings yet (Electron
+    // grants content scripts no session storage, so tbrowser-compat.js points
+    // this area at local), and an absent mapping is not one to install.
     chrome.storage.session.get(
       "normalModeKeyStateMapping",
-      (items) => this.setKeyMapping(items.normalModeKeyStateMapping),
+      (items) => {
+        if (items?.normalModeKeyStateMapping) {
+          this.setKeyMapping(items.normalModeKeyStateMapping);
+        }
+      },
     );
 
+    // tbrowser: the aliased area reports itself as "local".
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === "session" && changes.normalModeKeyStateMapping?.newValue) {
+      if ((area === "session" || area === "local") && changes.normalModeKeyStateMapping?.newValue) {
         this.setKeyMapping(changes.normalModeKeyStateMapping.newValue);
       }
     });
