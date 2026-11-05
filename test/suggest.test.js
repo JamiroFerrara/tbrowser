@@ -86,6 +86,15 @@ test('favourites outrank history they have never been visited from', () => {
   assert.equal(rows[0].value, 'https://old.example.com/');
 });
 
+test('a favourite outranks a page opened far more often', () => {
+  const busy = [{ url: 'https://news.ycombinator.com/', title: 'Hacker News', visits: Array(128).fill(NOW) }];
+  const starred = [{ url: 'https://h.example.com/', title: 'Hacker' }];
+  const rows = suggestions(':s hacker', { history: busy, favourites: starred, searchUrl: SEARCH, now: NOW });
+  assert.equal(rows[0].kind, 'favourite');
+  assert.equal(rows[0].value, 'https://h.example.com/');
+  assert.equal(rows[1].kind, 'history');
+});
+
 test('a colon command lists commands, not pages', () => {
   const rows = rowsFor(':sett');
   assert.equal(rows[0].value, ':settings');

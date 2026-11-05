@@ -21,7 +21,6 @@ const BAR_ROW = 32;
 const BAR_PAD = 8;
 const SIDEBAR_WIDTH = 220;
 const SPLIT_GAP = 2; // the line between two panes, drawn by the window behind them
-const SPLIT_ANIM_MS = 140;
 const PARTITION = 'persist:tbrowser';
 // The new-tab page is a local file, not about:blank: Chromium paints a blank
 // document white whatever the theme, so the first thing a launch showed was a
@@ -293,8 +292,6 @@ class Browser {
     // Two panes over one window: `a` and `b` are tab ids kept in a fixed
     // order, so focusing the other one does not swap the pictures around.
     this.split = null;
-    this.splitProgress = 1;
-    this.splitAnim = null;
     // The command bar's current shape; the workspace picker is one of them.
     this.barMode = 'address';
     // The tab a split pairs with, and the tab focus came from.
@@ -467,10 +464,7 @@ class Browser {
     this.tabs.clear();
     this.activeTabId = null;
     clearTimeout(this.persistTimer);
-    clearInterval(this.splitAnim);
     this.split = null;
-    this.splitAnim = null;
-    this.splitProgress = 1;
     this.previousTabId = null;
     this.workspaceName = null;
     this.barMode = 'address';
@@ -611,13 +605,7 @@ class Browser {
       const va = a?.view;
       const vb = b?.view;
       if (va && vb) {
-        const [first, second] = splitBounds(
-          width,
-          contentHeight,
-          this.split.orientation,
-          this.splitProgress,
-          SPLIT_GAP,
-        );
+        const [first, second] = splitBounds(width, contentHeight, this.split.orientation, SPLIT_GAP);
         if (place(va, first)) this.pageLayouts += 1;
         if (place(vb, second)) this.pageLayouts += 1;
       }
@@ -646,7 +634,7 @@ class Browser {
    * bottom) whatever the focus does, so switching between them never swaps
    * the pictures; the focused one is simply the active tab.
    */
-  attachSplit(a, b, orientation, { animate = false } = {}) {
+  attachSplit(a, b, orientation) {
     if (!this.win) return;
     const first = this.tabs.get(a);
     const second = this.tabs.get(b);
@@ -664,9 +652,7 @@ class Browser {
       this.win.contentView.addChildView(viewB, 0);
       second.attached = true;
     }
-    this.splitProgress = animate ? 0 : 1;
     this.layout();
-    if (animate) this.animateSplit();
     this.updateSidebar();
     this.persistTabs();
   }
@@ -680,9 +666,6 @@ class Browser {
         return;
       }
       this.split.orientation = orientation;
-      clearInterval(this.splitAnim);
-      this.splitAnim = null;
-      this.splitProgress = 1;
       this.layout();
       this.persistTabs();
       return;
@@ -696,15 +679,13 @@ class Browser {
     if (!partner) partner = [...this.tabs.values()].find((tab) => tab.id !== active.id) ?? null;
     // One tab has nothing to pair with, so the split asks for a second page.
     if (!partner) partner = this.createTab({ activate: false });
-    this.attachSplit(active.id, partner.id, orientation, { animate: true });
+    this.attachSplit(active.id, partner.id, orientation);
     this.activeTabId = active.id;
   }
 
   /** Close the split, keeping both tabs: the focused one fills the window. */
   closeSplit() {
     if (!this.split) return;
-    clearInterval(this.splitAnim);
-    this.splitAnim = null;
     const otherId = this.activeTabId === this.split.a ? this.split.b : this.split.a;
     const other = this.tabs.get(otherId);
     if (other?.view && other.attached) {
@@ -716,7 +697,6 @@ class Browser {
       other.attached = false;
     }
     this.split = null;
-    this.splitProgress = 1;
     this.layout();
     this.updateSidebar();
     this.persistTabs();
@@ -741,36 +721,9 @@ class Browser {
     this.persistTabs();
   }
 
-  /**
-   * A split is worth one short slide and no more: the pages reflow while the
-   * divider travels, so it is over before a page can feel it.
-   */
-  animateSplit() {
-    clearInterval(this.splitAnim);
-    const start = Date.now();
-    this.splitProgress = 0;
-    this.splitAnim = setInterval(() => {
-      if (!this.win || !this.split) {
-        clearInterval(this.splitAnim);
-        this.splitAnim = null;
-        return;
-      }
-      const t = Math.min(1, (Date.now() - start) / SPLIT_ANIM_MS);
-      this.splitProgress = 1 - (1 - t) ** 3;
-      this.layout();
-      if (t >= 1) {
-        clearInterval(this.splitAnim);
-        this.splitAnim = null;
-      }
-    }, 16);
-  }
-
   /** Swap every tab for a saved set in one step, split included. */
   replaceTabs(state) {
     if (!this.win) return;
-    clearInterval(this.splitAnim);
-    this.splitAnim = null;
-    this.splitProgress = 1;
     this.split = null;
     for (const tab of this.tabs.values()) {
       if (!tab.view) continue;
@@ -1055,7 +1008,6 @@ class Browser {
       // One pane is left, so the split goes with the tab; the surviving pane
       // fills the window.
       this.split = null;
-      this.splitProgress = 1;
       if (this.activeTabId === id) {
         this.activeTabId = null;
         if (otherId !== null && this.tabs.has(otherId)) {
@@ -2111,6 +2063,34 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
+    if (process.env.TB_SMOKE_SPLIT) {
+      const out = [];
+      const wl = (m) => { out.push(m); fs.writeFileSync(process.env.TB_SMOKE_SPLIT, out.join('\n') + '\n'); };
+      wl('start');
+      return showWindow().then(async () => {
+        wl('shown');
+        setTimeout(() => wl('stuck'), 20000);
+        const b = [...windows].pop();
+        const second = b.createTab({ url: 'data:text/html,<h1>B</h1>', activate: false });
+        const first = b.activeTab();
+        b.attachSplit(first.id, second.id, 'vertical');
+        await new Promise((r) => setTimeout(r, 400));
+        const log = (tag) => {
+          const va = b.tabs.get(b.split.a).view.getBounds();
+          const vb = b.tabs.get(b.split.b).view.getBounds();
+          wl(`[smoke] ${tag} a=${JSON.stringify(va)} b=${JSON.stringify(vb)} anim=${b.splitAnim} progress=${b.splitProgress}`);
+        };
+        log('vertical');
+        b.toggleSplit('horizontal');
+        await new Promise((r) => setTimeout(r, 300));
+        log('horizontal');
+        b.toggleSplit('horizontal');
+        await new Promise((r) => setTimeout(r, 300));
+        wl(`[smoke] closed split=${b.split} active=${b.activeTabId} layouts=${b.pageLayouts}`);
+        wl('done');
+        app.exit(0);
+      }).catch((e) => { wl('ERR ' + e.stack); app.exit(1); });
+    }
     return showWindow();
   });
 }

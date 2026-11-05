@@ -119,8 +119,9 @@ it is going to be opened as typed.
 
 Ranking is the frecency shape fff.nvim uses: every visit counts 1, decays with
 a 10-day half-life, stops counting after 30 days, and a page visited very often
-grows only as the square root past ten. Favourites are floored above ordinary
-visits so they stay reachable.
+grows only as the square root past ten. Favourites are listed above every
+visited page, however often that page is opened; the star is kept further up
+the list even when its match is weaker.
 
 Visited pages and favourites are `history.json` and `favourites.json` in the
 user-data directory next to `config.json`.
@@ -178,9 +179,10 @@ pressing the other turns it. `Alt+H`/`Alt+L` move between the two panes, and
 so do `Alt+J`/`Alt+K`; clicking a page focuses its pane. The command bar, the
 keys and the sidebar act on the focused pane, and the sidebar marks it.
 
-The split opens with a short slide, not a jump. The two panes are ordinary
-tabs: both stay in the tab list and in the sidebar, and closing one leaves the
-other filling the window.
+The split appears in one step, both panes already at their final size: the
+pages reflow once and no frame is spent moving a divider across them. The two
+panes are ordinary tabs: both stay in the tab list and in the sidebar, and
+closing one leaves the other filling the window.
 
 - The page order is fixed (first tab left or top), so focusing a pane never
   swaps the pictures.
