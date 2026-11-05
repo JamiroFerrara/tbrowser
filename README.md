@@ -165,6 +165,11 @@ back is another `Alt+P`.
 - **Saving.** `:ws save work` names the current tabs `work`. `:ws save` with no
   argument names them after the page you are on. Saving an existing name
   replaces it, and closing a window updates the workspace it was showing.
+- **Managing them.** The settings page (`:settings`) lists every saved set with
+  what it holds and when it was saved. Each row can be opened in this window,
+  renamed in place, or deleted; the field under the list keeps what this window
+  shows now under a new name. A rename or a delete follows the set into the
+  windows showing it, and a name another set already holds is refused.
 - **What is stored.** The tab addresses in order, which tab had focus, and any
   split. Titles and scroll positions are not stored; the pages load again.
 - **Grouping is open.** A workspace is a flat list, so the same site can appear

@@ -245,6 +245,9 @@ function savedLabel(at) {
 async function sessionAction(request) {
   const result = await window.panel.sessions(request);
   if (!result.ok) {
+    // A refused rename leaves the rejected text in the field; the list is the
+    // truth, so draw it again rather than let the row lie about its name.
+    renderSessions();
     setStatus(result.error, 'err');
     return result;
   }
