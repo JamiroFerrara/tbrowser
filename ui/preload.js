@@ -6,7 +6,8 @@ contextBridge.exposeInMainWorld('tb', {
   submit: (text) => ipcRenderer.send('bar:submit', text),
   hide: () => ipcRenderer.send('bar:hide'),
   suggest: (text) => ipcRenderer.invoke('bar:suggest', text),
-  onEdit: (callback) => ipcRenderer.on('bar:edit', (_event, value, command) => callback(value, command)),
+  onEdit: (callback) =>
+    ipcRenderer.on('bar:edit', (_event, value, command, preselect) => callback(value, command, preselect)),
   onFocus: (callback) => ipcRenderer.on('bar:focus', () => callback()),
   onMove: (callback) => ipcRenderer.on('bar:move', (_event, delta) => callback(delta)),
   onError: (callback) => ipcRenderer.on('bar:error', (_event, message) => callback(message)),

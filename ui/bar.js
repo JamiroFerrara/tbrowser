@@ -9,10 +9,12 @@ let items = [];
 let selected = 0;
 let queryToken = 0;
 let hintTimer = null;
+let preselectFirst = false;
 
-function focusInput(value, command) {
+function focusInput(value, command, preselect = false) {
   input.value = value || '';
   input.focus();
+  preselectFirst = Boolean(preselect);
   if (command) {
     const end = input.value.length;
     input.setSelectionRange(end, end);
@@ -86,9 +88,11 @@ async function refresh() {
   items = Array.isArray(rows) ? rows : [];
   // An empty field preselects nothing, so Enter opens what is typed; the
   // moment there are letters, the first row is the one Enter takes — the way
-  // Chrome preselects the likeliest page under the address.
-  if (!text.trim() || !items.length) selected = -1;
+  // Chrome preselects the likeliest page under the address. A picker that has
+  // nothing to type into it (Alt+P) asks for its first row instead.
+  if (!text.trim() || !items.length) selected = preselectFirst && items.length ? 0 : -1;
   else if (selected < 0 || selected >= items.length) selected = 0;
+  preselectFirst = false;
   render();
 }
 
