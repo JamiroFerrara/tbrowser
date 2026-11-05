@@ -197,6 +197,22 @@ function chromeView(kind, file, preload) {
   return { view, ready: view.webContents.loadFile(path.join(__dirname, 'ui', file)) };
 }
 
+/**
+ * Keep one spare bar and sidebar ready. The next window takes the pair out of
+ * the pool instead of starting two renderers, so its chrome is painted the
+ * moment the window is shown — this is what makes ctrl+n feel instant.
+ */
+function warmChrome() {
+  for (const [kind, file, preload] of [
+    ['bar', 'index.html', 'preload.js'],
+    ['sidebar', 'sidebar.html', 'sidebar-preload.js'],
+  ]) {
+    if (freeChrome[kind].length) continue;
+    mark(`chrome warming ${kind}`);
+    freeChrome[kind].push(chromeView(kind, file, preload));
+  }
+}
+
 class Browser {
   constructor(snapshot = {}) {
     this.id = nextWindowId++;
@@ -210,6 +226,9 @@ class Browser {
     this.bar = undefined;
     this.barVisible = false;
     this.barHeight = BAR_HEIGHT;
+    // Whether the dropdown under the bar has rows: ctrl+j/ctrl+k move the
+    // selection there and only fall through to tab switching when it is empty.
+    this.barListOpen = false;
 
     this.panel = undefined;
     this.panelVisible = false;
@@ -252,16 +271,18 @@ class Browser {
     });
     this.win = win;
     windows.add(this);
+    console.log('[DBG] open win=' + win.id + ' saved=' + JSON.stringify(this.saved.bounds) + ' got=' + JSON.stringify(win.getBounds()));
 
     this.restoreBounds();
 
     win.on('resize', () => this.layout());
     win.on('close', () => {
+      console.log('[DBG] close win=' + win.id + ' tabs=' + this.tabs.size + ' ws=' + windows.size + ' t=' + Date.now() + ' destroyed=' + win.isDestroyed() + ' shown=' + win.isVisible() + ' stack=' + new Error().stack.replace(/\n/g, ' << '));
       this.finalSnapshot = this.snapshot();
       this.persistTabsNow();
       this.detachChrome();
     });
-    win.on('closed', () => this.release());
+    win.on('closed', () => { console.log('[DBG] closed ws=' + windows.size); this.release(); });
 
     // The window is the launch: show it before the session, the bar or a page
     // exists, so nothing on the slow path can hold the first paint.
@@ -332,9 +353,12 @@ class Browser {
       this.showBar();
     }
 
-    // Warm the panel after the window is up: its first open then costs nothing.
+    // Warm the panel and the spare chrome after the window is up: the first
+    // `:extensions` and the next ctrl+n then cost nothing.
     setImmediate(() => {
-      if (this.win && !this.panel) this.ensurePanel();
+      if (!this.win) return;
+      if (!this.panel) this.ensurePanel();
+      warmChrome();
     });
   }
 
@@ -362,10 +386,14 @@ class Browser {
       const free = freeChrome[kind];
       mark(`chrome parked ${kind}`);
       if (free.length < 1) free.push(entry);
+      // A full pool keeps one spare only; close what it cannot take, or the
+      // renderer stays alive with nothing pointing at it.
+      else entry.view.webContents.close();
     }
   }
 
   release() {
+    console.log('[DBG] release tabs=' + this.tabs.size + ' ws=' + windows.size);
     for (const tab of this.tabs.values()) tab.view?.webContents.close();
     this.tabs.clear();
     this.activeTabId = null;
@@ -388,10 +416,12 @@ class Browser {
     this.pendingBar = null;
     this.win = undefined;
 
+    console.log('[DBG] release cleared, remaining=' + (windows.size - 1));
     windows.delete(this);
     // Closing the last window leaves its tabs on disk, so a resident relaunch
     // (or the next cold start) opens what the user was just looking at.
     remembered = windows.size ? null : this.finalSnapshot;
+    console.log('[DBG] release remembered=' + JSON.stringify(remembered && remembered.tabs));
     persistState();
   }
 
@@ -488,29 +518,37 @@ class Browser {
 
   // ------------------------------------------------------------- command bar
 
-  showBar({ command = false, search = false } = {}) {
+  /**
+   * Open the bar in one of three shapes: `command` starts on ":" (vim's
+   * command line, `:s` and the rest), `search` on an empty field, `address`
+   * on the page's current address. A typed `:` in any of them is still a
+   * command, and text that names no command is searched.
+   */
+  showBar(mode = 'address') {
     if (!this.barLoaded) {
-      this.pendingBar = { command, search };
+      this.pendingBar = mode;
       return;
     }
     const url = this.activeTab()?.view?.webContents.getURL();
-    const value = search ? ':s ' : command ? ':' : url && url !== HOME ? url : '';
+    const value = mode === 'command' ? ':' : mode === 'search' ? '' : url && url !== HOME ? url : '';
     this.barHeight = BAR_HEIGHT;
+    this.barListOpen = false;
     if (this.barVisible) {
-      this.bar.webContents.send('bar:edit', value, command || search);
+      this.bar.webContents.send('bar:edit', value, mode === 'command');
       this.bar.webContents.focus();
       return;
     }
     this.barVisible = true;
     this.win.contentView.addChildView(this.bar);
     this.layout();
-    this.bar.webContents.send('bar:edit', value, command || search);
+    this.bar.webContents.send('bar:edit', value, mode === 'command');
     this.bar.webContents.focus();
   }
 
   hideBar({ focusPage = true } = {}) {
     if (!this.barVisible) return;
     this.barVisible = false;
+    this.barListOpen = false;
     this.win.contentView.removeChildView(this.bar);
     this.layout();
     if (focusPage) this.focusContent();
@@ -667,6 +705,14 @@ class Browser {
     this.activateTab(ids[(index + delta + ids.length) % ids.length]);
   }
 
+  /** Ctrl+N: the Nth tab, or — for 9 — the last one, as Chrome does. */
+  selectTabNumber(number) {
+    const ids = [...this.tabs.keys()];
+    if (!ids.length) return;
+    const id = ids[number === 9 ? ids.length - 1 : number - 1];
+    if (id !== undefined) this.activateTab(id);
+  }
+
   // ---------------------------------------------------------------- sidebar
 
   /**
@@ -730,21 +776,41 @@ class Browser {
   // ------------------------------------------------------------------- keys
 
   pressShortcut(input) {
+    if (input.type === 'keyDown') console.log('[DBG] key ' + JSON.stringify({k: input.key, c: input.code, m: input.modifiers, a: input.isAutoRepeat}));
     if (this.panelVisible && this.panelEditing) return false;
+    // With a list under the bar, ctrl+j/ctrl+k walk it; with the list empty
+    // they fall through to the tab bindings below, as they do on the page.
+    if (this.barVisible && this.barListOpen) {
+      const delta = matchesAny(input, keys.nextSuggestion)
+        ? 1
+        : matchesAny(input, keys.prevSuggestion)
+          ? -1
+          : 0;
+      if (delta) {
+        this.bar.webContents.send('bar:move', delta);
+        return true;
+      }
+    }
     if (!this.barVisible) {
       // Only a handful of openers; the rest of the table is matched without
       // re-parsing accelerator strings on every keystroke.
       const index = keys.openBar.findIndex((expected) => matchesAny(input, [expected]));
       if (index !== -1) {
-        // ":" lands in vim's command line, and its first command is the search:
-        // every keystroke after ":s " is the query.
-        this.showBar({ search: config.keybindings.openBar[index] === ':' });
+        // ":" lands in vim's command line; Ctrl+L/Ctrl+K start on the address
+        // instead, where a leading ":" turns the input back into a command.
+        this.showBar(config.keybindings.openBar[index] === ':' ? 'command' : 'address');
         return true;
       }
       if (keys.search?.length && matchesAny(input, keys.search)) {
-        this.showBar({ search: true });
+        this.showBar('search');
         return true;
       }
+    }
+    // Ctrl+1..8 are the tab in that position, Ctrl+9 the last one — the
+    // browser convention, not a rebindable accelerator.
+    if (input.control && !input.alt && !input.meta && !input.shift && /^[1-9]$/.test(input.key)) {
+      this.selectTabNumber(Number(input.key));
+      return true;
     }
     if (this.barVisible && matchesAny(input, keys.closeBar)) {
       this.hideBar();
@@ -771,6 +837,7 @@ class Browser {
       return true;
     }
     if (matchesAny(input, keys.closeTab)) {
+      console.log('[DBG] closeTab key input=' + JSON.stringify(input) + ' tabs=' + this.tabs.size);
       if (this.activeTab()) this.closeTab(this.activeTabId);
       return true;
     }
@@ -862,7 +929,10 @@ class Browser {
 // ------------------------------------------------------------------ windows
 
 function createWindow(snapshot = {}) {
-  return new Browser(snapshot).open();
+  console.log('[DBG] createWindow from=' + JSON.stringify(snapshot.tabs) + ' at ' + new Error().stack.split('\n').slice(2,5).join(' | '));
+  const result = new Browser(snapshot).open();
+  result.catch((err) => console.log('[DBG] BUILD FAILED: ' + (err && err.stack)));
+  return result;
 }
 
 /**
@@ -890,7 +960,8 @@ function startShowRequestWatch() {
       } catch {
         // already consumed
       }
-      showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+      console.log('[DBG] show.request consumed');
+      showWindow().catch((err) => console.log(`[tbrowser] reopen failed: ${err.message}`));
     });
   } catch (err) {
     console.warn(`[tbrowser] cannot watch for show requests: ${err.message}`);
@@ -922,8 +993,9 @@ function startControlServer() {
     socket.setEncoding('utf8');
     socket.on('error', () => {});
     socket.once('data', (message) => {
+      console.log('[DBG] pipe msg=' + String(message).trim());
       if (String(message).trim() === 'show') {
-        showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+        showWindow().catch((err) => console.log(`[tbrowser] reopen failed: ${err.message}`));
       }
       socket.end('ok\n');
     });
@@ -947,6 +1019,7 @@ function startControlServer() {
 
 /** Focus the window in front, or build the ones the last run left behind. */
 function showWindow() {
+  console.log('[DBG] showWindow ws=' + windows.size + ' creating=' + Boolean(creatingWindow) + ' at ' + new Error().stack.split('\n').slice(2,5).join(' | '));
   const existing = [...windows].pop();
   if (existing) {
     existing.focus();
@@ -976,13 +1049,16 @@ function openWindow() {
 
 // ------------------------------------------------------------------ commands
 
+// Returned by runCommand for text that is not a command at all: the bar then
+// opens it the way it would open the same text without the colon.
+const NOT_A_COMMAND = Symbol('not a command');
+
 function runCommand(window, command) {
   switch (command.name) {
     case 's': {
       const query = command.args.join(' ').trim();
-      if (!query) return 'nothing to search';
       window.hideBar();
-      window.navigate(`${config.searchUrl}${encodeURIComponent(query)}`);
+      if (query) window.navigate(`${config.searchUrl}${encodeURIComponent(query)}`);
       return null;
     }
     case 'fav': {
@@ -1004,7 +1080,7 @@ function runCommand(window, command) {
       window.openPanel('settings');
       return null;
     default:
-      return `unknown command: ${command.name || ':'} — try :s, :fav, :extensions or :settings`;
+      return NOT_A_COMMAND;
   }
 }
 
@@ -1013,7 +1089,18 @@ ipcMain.on('bar:submit', (event, text) => {
   if (!window) return;
   const command = parseCommand(text);
   if (command) {
+    if (!command.name) {
+      window.hideBar();
+      return;
+    }
     const error = runCommand(window, command);
+    if (error === NOT_A_COMMAND) {
+      // Nothing after the colon named a command, so the text is what it would
+      // have been without the colon: an address or a search.
+      window.hideBar();
+      window.navigate(String(text).trim().slice(1).trim());
+      return;
+    }
     if (error) window.bar.webContents.send('bar:error', error);
     return;
   }
@@ -1033,6 +1120,7 @@ ipcMain.handle('bar:suggest', (event, text) => {
   });
   const window = ctxFor(event);
   if (window) {
+    window.barListOpen = items.length > 0;
     window.barHeight = BAR_HEIGHT + (items.length ? items.length * BAR_ROW + BAR_PAD : 0);
     window.layout();
   }
@@ -1232,7 +1320,8 @@ if (!gotLock) {
   app.on('second-instance', (_event, argv) => {
     // A hidden launch only wants the daemon up; it must not pop a window.
     if (argv.includes('--hidden') || argv.includes('--daemon')) return;
-    showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+    console.log('[DBG] second-instance');
+    showWindow().catch((err) => console.log(`[tbrowser] reopen failed: ${err.message}`));
   });
 
   app.whenReady().then(() => {
@@ -1259,5 +1348,6 @@ if (!gotLock) {
 // With the default resident daemon, closing the last window parks the process
 // instead of paying Electron's cold start on the next launch.
 app.on('window-all-closed', () => {
+  console.log('[DBG] window-all-closed resident=' + config?.resident);
   if (!config?.resident) app.quit();
 });

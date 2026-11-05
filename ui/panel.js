@@ -16,6 +16,8 @@ const ACTION_LABELS = {
   closeTab: 'Close tab',
   nextTab: 'Next tab',
   prevTab: 'Previous tab',
+  nextSuggestion: 'Next suggestion',
+  prevSuggestion: 'Previous suggestion',
   toggleSidebar: 'Toggle sidebar',
   devtools: 'Developer tools',
   newWindow: 'New window',

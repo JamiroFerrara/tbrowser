@@ -84,8 +84,23 @@ async function refresh() {
   // A slower reply for older text must not replace what is on screen now.
   if (token !== queryToken) return;
   items = Array.isArray(rows) ? rows : [];
-  if (selected >= items.length) selected = Math.max(0, items.length - 1);
+  // An empty field preselects nothing, so Enter opens what is typed; the
+  // moment there are letters, the first row is the one Enter takes — the way
+  // Chrome preselects the likeliest page under the address.
+  if (!text.trim() || !items.length) selected = -1;
+  else if (selected < 0 || selected >= items.length) selected = 0;
   render();
+}
+
+function step(delta) {
+  if (!items.length) return;
+  selected =
+    selected < 0
+      ? delta > 0
+        ? 0
+        : items.length - 1
+      : (selected + delta + items.length) % items.length;
+  paint();
 }
 
 function submit(value) {
@@ -96,6 +111,9 @@ function submit(value) {
 window.tb.onEdit(focusInput);
 window.tb.onError((message) => setHint(message, { error: true }));
 window.tb.onNotice((message) => setHint(message));
+// Ctrl+J/Ctrl+K are matched in the main process (they are rebindable there),
+// which sends the step here once it knows the list is on screen.
+window.tb.onMove(step);
 
 input.addEventListener('input', refresh);
 
@@ -109,11 +127,9 @@ input.addEventListener('keydown', (event) => {
     window.tb.hide();
   } else if (event.key === 'ArrowDown' && items.length) {
     event.preventDefault();
-    selected = (selected + 1) % items.length;
-    paint();
+    step(1);
   } else if (event.key === 'ArrowUp' && items.length) {
     event.preventDefault();
-    selected = (selected - 1 + items.length) % items.length;
-    paint();
+    step(-1);
   }
 });
