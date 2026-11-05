@@ -8,6 +8,10 @@
  * seconds on Windows. This talks to the resident process over its local
  * control channel instead, so the launch is a pipe write and a very short
  * hop. Exit code 1 means nothing is running: start the app normally then.
+ *
+ * `--new` asks for a new window instead of the one already open — what a
+ * hotkey binds to when it should open a browser beside what the user is doing
+ * rather than pull them to a window they cannot see.
  */
 
 import net from 'node:net';
@@ -24,13 +28,14 @@ function controlTarget() {
 }
 
 const socket = net.createConnection(controlTarget());
+const request = process.argv.includes('--new') ? 'new' : 'show';
 const timer = setTimeout(() => {
   socket.destroy();
   process.exit(1);
 }, 500);
 
 socket.on('connect', () => {
-  socket.end('show\n');
+  socket.end(`${request}\n`);
 });
 
 socket.on('data', () => {

@@ -347,6 +347,12 @@ starting the executable again.
 - Any hotkey or shell script can drop a file named `show.request` beside the
   user data instead (`%APPDATA%\tbrowser\show.request` on Windows); the daemon
   watches for it. AutoHotkey can do that with `FileAppend`.
+- The word the request carries picks the window: `show` focuses the one already
+  open, `new` opens another, the way `Ctrl+N` does. `node scripts/show.mjs
+  --new` asks for the second over the pipe. A hotkey that should not drag the
+  user to a window sitting on another desktop or `GlazeWM` workspace sends
+  `new` when no browser window is on the screen in front of them, and `show`
+  when one is.
 - `tbrowser.exe --hidden` starts the process with no window, so it can sit in
   the login startup folder: the first press of the day is then a request too.
 - `tbrowser.exe --quit` ends the running process — window or no window. Every
