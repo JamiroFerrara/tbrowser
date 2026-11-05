@@ -345,6 +345,9 @@ function collect() {
     adblock: content.querySelector('#setting-adblock').checked,
     resident: content.querySelector('#setting-resident').checked,
     preload: content.querySelector('#setting-preload').checked,
+    blur: content.querySelector('#setting-blur').checked,
+    blurColor: content.querySelector('#setting-blur-color').value,
+    blurOpacity: content.querySelector('#setting-blur-opacity').value,
     keybindings,
     warm,
   };
@@ -365,6 +368,12 @@ function renderSettings(data) {
   resident.id = 'setting-resident';
   const preload = checkbox(model.config.preload);
   preload.id = 'setting-preload';
+  const blur = checkbox(model.config.blur);
+  blur.id = 'setting-blur';
+  const blurColor = textInput(model.config.blurColor, '#24273a');
+  blurColor.id = 'setting-blur-color';
+  const blurOpacity = textInput(String(model.config.blurOpacity), '37');
+  blurOpacity.id = 'setting-blur-opacity';
   const favourites = model.favourites ?? [];
 
   const actions = el('div', 'row');
@@ -414,6 +423,24 @@ function renderSettings(data) {
     group(
       'Browsing',
       field(el('span', '', 'Block ads and trackers'), adblock, 'The built-in engine, used unless uBlock Origin loaded.'),
+    ),
+    group(
+      'Look',
+      field(
+        el('span', '', 'Blur the desktop behind the window'),
+        blur,
+        'Windows 11 acrylic: the empty tab, the command bar, the sidebar and this page go transparent over a blurred desktop. Off, every surface is painted its own colour.',
+      ),
+      field(
+        el('span', '', 'Blur tint'),
+        blurColor,
+        'The colour laid over the blur, as #rrggbb. 37 at #24273a is the Catppuccin Macchiato terminal this browser was set up beside.',
+      ),
+      field(
+        el('span', '', 'Blur opacity'),
+        blurOpacity,
+        'How much of the tint covers the blur, 0–100. 0 is the bare blur, 100 is the tint alone.',
+      ),
     ),
     group(
       'Startup',

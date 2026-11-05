@@ -33,6 +33,27 @@ const BLANK = 'about:blank'; // what state files written before the home page ho
 // instead of white.
 const CHROME_BG = { dark: '#1b1b1b', light: '#f5f5f5' };
 const chromeBg = () => (nativeTheme.shouldUseDarkColors ? CHROME_BG.dark : CHROME_BG.light);
+// `backgroundMaterial` is Windows 11 22H2 and up. Older Windows would see a
+// window told it is translucent with no blur behind it — a black hole where
+// the chrome should be — so the backdrop is only asked for where it exists.
+const WIN11_22H2 = 22621;
+const desktopBlur =
+  process.platform === 'win32' && Number(os.release().split('.')[2]) >= WIN11_22H2;
+/** Whether the desktop is blurred behind the window: the setting, on a Windows that draws it. */
+const blurOn = () => desktopBlur && config?.blur === true;
+/**
+ * The colour the empty tab and the chrome paint: the desktop blur showing
+ * through `blurColor` at `blurOpacity` percent — the Windows Terminal window's
+ * own recipe — or the chrome's colour when there is no blur behind it. An
+ * #AARRGGBB colour, since that is the alpha Electron's views take.
+ */
+function surfaceBg() {
+  if (!blurOn()) return chromeBg();
+  const alpha = Math.round((config.blurOpacity / 100) * 255)
+    .toString(16)
+    .padStart(2, '0');
+  return `#${alpha}${config.blurColor.slice(1)}`;
+}
 // `--no-ui` is the test launch: the window is built exactly as a real one and
 // never put on screen, so a run that only needs the browser up — a smoke test,
 // or an agent checking a change while the user works — takes no focus and
@@ -189,9 +210,9 @@ function watchViewKeys(webContents) {
  * default, that gap is white: the flash every window and tab showed as it
  * opened. Give the view the chrome's color and the gap disappears.
  */
-function newView(webPreferences) {
+function newView(webPreferences, background = chromeBg()) {
   const view = new WebContentsView({ webPreferences });
-  view.setBackgroundColor(chromeBg());
+  view.setBackgroundColor(background);
   return view;
 }
 
@@ -231,17 +252,69 @@ function chromeView(kind, file, preload) {
     mark(`chrome dropped ${kind}`);
   }
   mark(`chrome new ${kind}`);
-  const view = newView({
-    preload: path.join(__dirname, 'ui', preload),
-    sandbox: true,
-    contextIsolation: true,
-    nodeIntegration: false,
-    spellcheck: false,
-  });
+  const view = newView(
+    {
+      preload: path.join(__dirname, 'ui', preload),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+    },
+    chromeBackground(kind),
+  );
   view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   watchViewKeys(view.webContents);
   return { view, ready: view.webContents.loadFile(path.join(__dirname, 'ui', file)) };
 }
+
+/**
+ * Repaint every surface the blur setting controls, on the windows and pools
+ * that already exist: the setting changes under a running browser, and what
+ * the user sees has to be the new answer, not the next launch's.
+ */
+function applyBlur() {
+  const bg = surfaceBg();
+  const blurred = blurOn();
+  for (const window of windows) {
+    const win = window.win;
+    if (!win) continue;
+    if (desktopBlur) win.setBackgroundMaterial(blurred ? 'acrylic' : 'none');
+    win.setBackgroundColor(blurred ? '#00000000' : chromeBg());
+    for (const [kind, view] of [
+      ['bar', window.bar],
+      ['panel', window.panel],
+      ['sidebar', window.sidebar],
+    ]) {
+      if (view && !view.webContents.isDestroyed()) view.setBackgroundColor(chromeBackground(kind));
+    }
+    for (const tab of window.tabs.values()) {
+      if (tab.url === HOME && tab.view) tab.view.setBackgroundColor(bg);
+    }
+  }
+  for (const [kind, entry] of [
+    ['bar', freeChrome.bar],
+    ['sidebar', freeChrome.sidebar],
+    ['panel', freeChrome.panel],
+  ]) {
+    for (const parked of entry) {
+      if (parked.view && !parked.view.webContents.isDestroyed()) {
+        parked.view.setBackgroundColor(chromeBackground(kind));
+      }
+    }
+  }
+  for (const view of freeTabs) {
+    if (!view.webContents.isDestroyed()) view.setBackgroundColor(bg);
+  }
+}
+
+/**
+ * What each chrome view is painted with. The bar keeps its own strip at the
+ * bottom of the window and the sidebar sits beside the page, so both show the
+ * window's blur behind them. The settings panel is a whole page laid over the
+ * page it covers: a clear surface there would show that page through its text,
+ * so it keeps the chrome's colour.
+ */
+const chromeBackground = (kind) => (kind === 'panel' ? chromeBg() : surfaceBg());
 
 /**
  * Keep one spare bar and sidebar ready. The next window takes the pair out of
@@ -284,7 +357,7 @@ function tabPreferences() {
 function warmTab() {
   if (freeTabs.length) return;
   mark('tab warming');
-  const view = newView(tabPreferences());
+  const view = newView(tabPreferences(), surfaceBg());
   view.webContents.loadURL(HOME).catch(() => {});
   freeTabs.push(view);
 }
@@ -477,7 +550,13 @@ class Browser {
       minHeight: 240,
       show: false,
       title: 'tbrowser',
-      backgroundColor: chromeBg(),
+      // The backdrop is the window's, not a view's: ask Windows for acrylic
+      // when the setting is on, and the surfaces over it paint the tint the
+      // views are given. No `backgroundColor` beside it — an opaque one would
+      // paint over the blur.
+      ...(blurOn()
+        ? { backgroundMaterial: 'acrylic' }
+        : { backgroundColor: chromeBg() }),
     });
     this.win = win;
     windows.add(this);
@@ -1179,7 +1258,7 @@ class Browser {
     // tab with an address of its own pays for a renderer.
     const warm = tab.url === HOME ? takeWarmTab() : null;
     if (!warm) mark('tab renderer new');
-    const view = warm ?? newView(tabPreferences());
+    const view = warm ?? newView(tabPreferences(), tab.url === HOME ? surfaceBg() : chromeBg());
     tab.view = view;
     track(this, view);
     this.wireTab(tab);
@@ -2324,6 +2403,7 @@ function unpacked(target) {
 function applyConfig(next, origin, source) {
   config = next;
   keys = compileKeybindings(config.keybindings);
+  applyBlur();
   syncAdblock().catch((err) => console.warn(`[tbrowser] adblock switch failed: ${err.message}`));
   // The preload switch and the favourites' own flags decide what stays loaded.
   syncWarmPages();
