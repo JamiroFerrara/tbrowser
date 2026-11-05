@@ -148,7 +148,9 @@ function paintAccent(win) {
   const set = accentCall();
   if (!set || !win) return false;
   try {
-    return set(win, accentColor()) !== 0;
+    const painted = set(win, accentColor()) !== 0;
+    mark('acrylic ' + (painted ? 'painted' : 'refused'));
+    return painted;
   } catch (err) {
     console.warn(`[tbrowser] could not paint the acrylic: ${err.message}`);
     return false;
@@ -688,7 +690,15 @@ class Browser {
     windows.add(this);
     // The brush survives the window becoming inactive; re-asserting it when the
     // window comes back is what keeps a theme flip or a material switch honest.
-    if (acrylicOn()) win.on('focus', () => paintAccent(win));
+    if (acrylicOn()) {
+      // A see-through window starts with no brush at all: the first paint has
+      // to ask for it, and again whenever the window is shown or focused, so
+      // the blur is there from the first frame and not a beat later.
+      win.on('show', () => paintAccent(win));
+      win.on('focus', () => paintAccent(win));
+      win.once('ready-to-show', () => paintAccent(win));
+      paintAccent(win);
+    }
 
     this.restoreBounds();
 
