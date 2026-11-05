@@ -114,8 +114,9 @@ back to it — the text you had typed stays where it was.
 
 While you type, a list grows up out of the bar and narrows with you:
 
-- `🗂` the tabs already open, the focused one first; `Enter` switches to the tab
-  instead of loading its address again
+- `🗂` the tabs open in every window, this window's focused one first — a row
+  from another window is marked with that window's number, and `Enter` goes
+  there; either way it switches instead of loading an address again
 - `🕘` pages you have visited, ranked by frecency, `Enter` on the first one
 - `★` favourites, added and removed with `:fav`
 - `🔍` the web search, last row, so a query with no match still searches —
@@ -153,11 +154,39 @@ Commands:
 | `:ws save [name]` | keep this window's tabs under a name (the page's host by default) |
 | `:ws open <name>` | swap this window's tabs for that saved set |
 | `:ws delete <name>` | forget a saved set |
-| `:tab <id>` | switch to a tab by the id the picker uses |
+| `:tab <id>` | go to a tab of any window by the id the lists show |
+| `:tab copy <id>` | open that tab's page here as a second tab |
 | `:vsplit` / `:split` / `:only` | split side by side / stacked / back to one page |
 
 A `target=_blank` link opens in a new tab; a page asking for a sized popup —
 a sign-in — opens in a real window so the login can finish.
+
+## Windows and tabs
+
+Every window is one browser: `Ctrl+N` opens another over the one you are in,
+and a launch that lands on the running instance opens a fresh one. The tabs of
+all of them are one list, the way tmux clients attached to one server share its
+sessions — the window you are in first, then every other window in the order it
+opened, with the window's place named beside its rows.
+
+- **`Ctrl+E` sidebar** lists every window's tabs under a `this window` /
+  `window N` heading. Clicking a row of another window brings that window to
+  the front on that tab; the tab keeps its own place, its own page and its own
+  back history, because nothing moves.
+- **The command bar** puts the same list first in its dropdown. A row from
+  another window is marked `window N · host`, and `Enter` goes to it — the
+  window comes forward, the tab is focused.
+- **`:tab <id>`** goes to any tab of the browser by the id the lists show.
+- **`:tab copy <id>`** opens a second tab on the page another one already
+  shows, here, in the window you are typing in: the same page on both sides.
+  The document is its own — a renderer cannot be in two windows at once — but
+  the profile is shared, so the address is served from the memory cache the
+  open tab already filled and there is no second download.
+- A tab closed from a sidebar closes in the window that holds it; closing the
+  last tab of a window still closes that window.
+- Nothing crosses the process boundary. A separate `tbrowser.exe` (a `--no-ui`
+  test run keeps a throwaway profile of its own) has its own tabs; sharing
+  happens inside one browser at a time.
 
 ## Workspaces
 

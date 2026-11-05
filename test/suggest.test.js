@@ -145,6 +145,30 @@ test('open tabs are the first rows, and their pages are not listed twice', () =>
   assert.equal(typed.filter((row) => row.title === 'GitHub').length, 1);
 });
 
+test('a tab of another window keeps its place in that window', () => {
+  // What lib/shared-tabs hands the bar: this window's tab first, then the one
+  // another window holds.
+  const tabs = [
+    { id: 1, url: 'https://github.com/', title: 'GitHub', active: true, window: 1, slot: 1, here: true },
+    {
+      id: 9,
+      url: 'https://news.ycombinator.com/',
+      title: 'Hacker News',
+      active: true,
+      window: 2,
+      slot: 2,
+      here: false,
+    },
+  ];
+  const rows = suggestions('', { searchUrl: SEARCH, tabs, now: NOW });
+  assert.equal(rows[0].kind, 'tab');
+  assert.equal(rows[0].subtitle, 'current tab');
+  const other = rows.find((row) => row.value === ':tab 9');
+  assert.equal(other.subtitle, 'window 2 · news.ycombinator.com');
+  // The other window's focused tab is not hoisted above this window's list.
+  assert.equal(rows[1].value, ':tab 9');
+});
+
 test('a workspace picker lists saved sets and a way to save this one', () => {
   const workspaces = [
     { name: 'work', tabs: ['https://github.com/', 'https://mail.example.com/'], activeTab: 0 },

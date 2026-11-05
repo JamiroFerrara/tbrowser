@@ -2023,6 +2023,17 @@ function sharedTabRows(current) {
   return sharedTabs(windowTabLists(), current.id);
 }
 
+/**
+ * Repaint every open sidebar: the list is the whole browser's tabs, so a tab
+ * that opens, closes or renames in one window changes what all of them show.
+ */
+function updateSidebars() {
+  for (const window of windows) {
+    if (!window.sidebar || !window.sidebarLoaded) continue;
+    window.sidebar.webContents.send('tabs:update', sharedTabRows(window));
+  }
+}
+
 /** The window holding a tab, or null when no window does. */
 function windowOfTab(id) {
   for (const window of windows) {
