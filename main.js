@@ -1402,8 +1402,16 @@ function startControlServer() {
   });
 }
 
-/** Focus the window in front, or build the ones the last run left behind. */
-function showWindow() {
+/**
+ * Focus the window in front, or build one.
+ *
+ * `restore` belongs to the process start alone: the first window it shows picks
+ * up the tabs the last run left in `state.json`. A launch that lands on a
+ * browser already running — a second press of the exe, the control pipe, the
+ * request file — is a request for a new instance, so a parked process opens an
+ * empty window instead of handing back the tabs it was parked on.
+ */
+function showWindow({ restore = false } = {}) {
   // A Browser can outlive its window: a failed build, or a release that never
   // ran, leaves one in this set with nothing on screen. Focusing it is a no-op
   // and the request dies there, which is how a resident process ends up with
@@ -1423,6 +1431,7 @@ function showWindow() {
     existing.showBar();
     return Promise.resolve();
   }
+  if (!restore) return openWindow();
   if (!creatingWindow) {
     creatingWindow = restoreWindows().finally(() => {
       creatingWindow = null;
@@ -2080,7 +2089,7 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
-    return showWindow();
+    return showWindow({ restore: true });
   });
 }
 

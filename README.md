@@ -271,9 +271,12 @@ cold start.
 - The window appears before the session, the command bar or a page exists:
   filter lists, extensions and page loads happen while it is already visible.
 - Closing the last window parks the process instead of quitting (`"resident":
-  true`, the default). The next `npm start` hands off to that process and
-  builds a window from the warm session. Set `"resident": false` to quit with
-  the last window as a normal app does.
+  true`, the default). The next `npm start` hands off to that process, which
+  opens a new empty window — one home tab and the command bar focused. The
+  saved session comes back only when the process starts cold, after `--quit`
+  or a reboot; a launch that finds the browser already running never brings
+  back the tabs it was parked on. Set `"resident": false` to quit with the last
+  window as a normal app does.
 - `Ctrl+N` reuses the running process: the session, extensions and blocking are
   already warm, so a new window paints before it has loaded anything and is
   usable in about a tenth of a second. Every window keeps its own tabs, its own
