@@ -102,6 +102,38 @@
     margin-bottom: 6px;
   }
   .kbd-label { font-size: 13px; color: #c8c8c8; }
+  .fav-row {
+    display: grid;
+    grid-template-columns: 16px 1fr;
+    gap: 2px 8px;
+    align-items: center;
+    padding: 5px 0;
+    cursor: pointer;
+  }
+  .fav-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fav-url {
+    grid-column: 2;
+    font-size: 11.5px;
+    color: #7d7d7d;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) auto auto auto;
+    gap: 2px 8px;
+    align-items: center;
+    padding: 7px 0;
+    border-top: 1px solid #2a2a2a;
+  }
+  .session-name { grid-area: 1 / 1; }
+  .session-meta { grid-area: 2 / 1 / 3 / -1; font-size: 11.5px; color: #7d7d7d; }
+  .session-open { grid-area: 1 / 2; }
+  .session-rename { grid-area: 1 / 3; }
+  .session-delete { grid-area: 1 / 4; }
+  .session-new { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .session-new input { flex: 1 1 200px; }
   .hint { font-size: 12px; color: #7d7d7d; margin-top: 4px; }
   button.primary { background: #2f4f7f; border-color: #3f6aa8; }
   button.ghost { background: transparent; border-color: transparent; color: #888; padding: 4px 6px; }
@@ -115,6 +147,7 @@
     button.primary { background: #2f4f7f; border-color: #3f6aa8; color: #fff; }
     input[type="text"] { background: #fff; border-color: #ddd; }
     .kbd-label { color: #333; }
+    .session-row { border-color: #e4e4e4; }
     .group > h2 { color: #8a8a8a; }
   }
 </style>

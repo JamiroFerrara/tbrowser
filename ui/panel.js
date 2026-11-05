@@ -228,6 +228,110 @@ function setStatus(text, kind) {
   status.textContent = text;
 }
 
+// ------------------------------------------------------------------ sessions
+
+let sessionsSection = null;
+
+/** "5 Nov 2026, 17:40" — enough to tell two saved sets apart. */
+function savedLabel(at) {
+  return new Date(at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+/**
+ * One round trip to the browser, then the section redraws from the answer.
+ * Only the section is replaced: a config field the user is half-way through
+ * editing keeps what was typed.
+ */
+async function sessionAction(request) {
+  const result = await window.panel.sessions(request);
+  if (!result.ok) {
+    setStatus(result.error, 'err');
+    return result;
+  }
+  if (result.sessions) model.sessions = result.sessions;
+  renderSessions();
+  return result;
+}
+
+/** One saved set: its name in a field, what it holds, and what can be done to it. */
+function sessionRow(entry) {
+  const row = el('div', 'session-row');
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.className = 'session-name';
+  name.spellcheck = false;
+  name.value = entry.name;
+  name.setAttribute('aria-label', 'Session name');
+
+  const meta = el('div', 'session-meta');
+  meta.textContent = `${entry.tabs} tab${entry.tabs === 1 ? '' : 's'} · saved ${savedLabel(entry.savedAt)}${
+    entry.current ? ' · this window' : ''
+  }`;
+
+  const open = el('button', 'session-open', 'Open');
+  open.addEventListener('click', () => sessionAction({ action: 'open', name: entry.name }));
+
+  const rename = el('button', 'session-rename', 'Rename');
+  const applyName = async () => {
+    const next = name.value.trim();
+    if (!next || next === entry.name) return;
+    const result = await sessionAction({ action: 'rename', name: entry.name, to: next });
+    if (result.ok) setStatus(`renamed session "${entry.name}" to "${next}"`, 'ok');
+  };
+  rename.addEventListener('click', applyName);
+  name.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') applyName();
+  });
+
+  const remove = el('button', 'session-delete ghost', 'Delete');
+  remove.addEventListener('click', async () => {
+    const result = await sessionAction({ action: 'delete', name: entry.name });
+    if (result.ok) setStatus(`deleted session "${entry.name}"`, 'ok');
+  });
+
+  row.append(name, meta, open, rename, remove);
+  return row;
+}
+
+/** The list plus the field that keeps what this window shows now under a name. */
+function renderSessions() {
+  if (!sessionsSection) return;
+  const list = model.sessions ?? [];
+  const rows = list.length
+    ? list.map(sessionRow)
+    : [el('div', 'hint', 'No saved sessions yet. Name this window below, or save it from the bar with :ws save.')];
+
+  const fresh = el('div', 'session-new');
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.id = 'session-new-name';
+  name.placeholder = 'name for this window’s tabs';
+  name.spellcheck = false;
+  const keep = async () => {
+    const result = await sessionAction({ action: 'save', name: name.value.trim() });
+    if (!result.ok) return;
+    const made = (result.sessions ?? []).find((entry) => entry.current);
+    if (made) setStatus(`saved this window as "${made.name}"`, 'ok');
+  };
+  const save = el('button', 'primary', 'Save session');
+  save.addEventListener('click', keep);
+  name.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') keep();
+  });
+  fresh.append(name, save);
+
+  sessionsSection.replaceChildren(
+    el('h2', '', 'Sessions'),
+    el(
+      'div',
+      'hint',
+      'Sets of tabs kept under a name. Open one to put its tabs in this window, or rename and forget one here; the workspace picker lists the same sets.',
+    ),
+    ...rows,
+    fresh,
+  );
+}
+
 function collect() {
   const keybindings = {};
   for (const input of content.querySelectorAll('.kbd-input')) keybindings[input.dataset.action] = input.value;
@@ -285,6 +389,9 @@ function renderSettings(data) {
 
   actions.append(save, revert, open);
 
+  sessionsSection = el('section', 'group');
+  renderSessions();
+
   content.replaceChildren(
     actions,
     group(
@@ -310,6 +417,7 @@ function renderSettings(data) {
         ? favourites.map(favouriteRow)
         : [el('div', 'hint', 'No favourites yet — star a page with :fav, then pick it here.')]),
     ),
+    sessionsSection,
     (() => {
       const section = el('section', 'group');
       section.append(
@@ -335,6 +443,14 @@ window.panel.onShow(async (page) => {
   const data = await window.panel.get(page);
   if (page === 'extensions') renderExtensions(data);
   else renderSettings(data);
+});
+
+// A session saved, renamed or forgotten anywhere — the picker, another
+// window's settings page — redraws this list without touching the form.
+window.panel.onSessionsChanged((data) => {
+  if (!model) return;
+  model.sessions = data.sessions;
+  if (title.textContent === 'Settings') renderSessions();
 });
 
 // A config file edited outside the browser lands here: the new values are

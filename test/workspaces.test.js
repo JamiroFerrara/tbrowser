@@ -52,6 +52,31 @@ test('saving the same name updates it instead of adding a copy', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a renamed workspace keeps its tabs and refuses a name already taken', () => {
+  const dir = tempDir();
+  const store = new Workspaces(dir);
+  store.save('work', { tabs: ['https://a.example.com/', 'https://c.example.com/'], activeTab: 1 });
+  store.save('play', { tabs: ['https://b.example.com/'] });
+  const savedAt = store.get('work').savedAt;
+
+  const renamed = store.rename('WORK', ' project ');
+  assert.equal(renamed.name, 'project');
+  assert.equal(renamed.tabs[0], 'https://a.example.com/');
+  assert.equal(renamed.savedAt, savedAt);
+  assert.equal(store.get('work'), null);
+
+  assert.equal(store.rename('project', 'play'), null);
+  assert.equal(store.get('project').name, 'project');
+  assert.equal(store.rename('project', 'project').name, 'project');
+  assert.equal(store.rename('missing', 'other'), null);
+  assert.equal(store.rename('project', '   '), null);
+
+  const reopened = new Workspaces(dir);
+  assert.equal(reopened.get('project').tabs[0], 'https://a.example.com/');
+  assert.equal(reopened.list().length, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('a workspace ignores pages it cannot reopen and a split that points nowhere', () => {
   const dir = tempDir();
   const store = new Workspaces(dir);

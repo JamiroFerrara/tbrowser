@@ -54,6 +54,12 @@ test('normalize accepts a custom search url', () => {
   assert.equal(normalize({ searchUrl: 42 }).searchUrl, 'https://www.google.com/search?q=');
 });
 
+test('preloading is on by default and only a boolean changes it', () => {
+  assert.equal(normalize({}).preload, true);
+  assert.equal(normalize({ preload: false }).preload, false);
+  assert.equal(normalize({ preload: 'yes' }).preload, true);
+});
+
 test('binding text parses comma-separated accelerators', () => {
   assert.deepEqual(parseBindingText('ctrl+l, ctrl+k'), { ok: true, list: ['ctrl+l', 'ctrl+k'] });
   assert.deepEqual(parseBindingText('  F5  '), { ok: true, list: ['f5'] });

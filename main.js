@@ -12,6 +12,7 @@ const { DEFAULTS, loadConfig, normalize, compileKeybindings, matchesAny, parseBi
 const { loadExtensions, findExtensions, readDisabledExtensions, writeDisabledExtensions } = require('./lib/extensions');
 const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
+const { PreloadPool } = require('./lib/preload');
 const { suggestions } = require('./lib/suggest');
 const { Workspaces, normalizeName, autoName, LAST: LAST_WORKSPACE } = require('./lib/workspaces');
 const { splitBounds } = require('./lib/layout');
@@ -309,18 +310,29 @@ function takeWarmTab() {
  * instead of starting a load: the page is on screen in the frame the tab is.
  *
  * Taking one starts a replacement in the background — that is what makes the
- * second visit just as fast, and what a page that changes (a video site's home)
- * gets a fresh copy of rather than the one that was left in the pool.
+ * second visit just as fast. The pool is never allowed to cost the browser
+ * speed it did not ask for: pages start one at a time, none of them runs while
+ * no window is open, and a favourite already on screen is not loaded twice
+ * (opening it again is a normal load, which is what a fresh home page is).
  */
-const warmPages = new Map(); // url -> { view, url, loadedAt, done, failed }
+const preloads = new PreloadPool(startWarmPage);
 
 function desiredWarmUrls() {
-  if (!config?.preload || !visited) return [];
+  if (!config?.preload || !visited || windows.size === 0) return [];
+  const open = new Set();
+  for (const window of windows) {
+    for (const tab of window.tabs.values()) open.add(tab.url);
+  }
   return visited
     .favourites()
-    .filter((fav) => fav.warm && /^https?:/i.test(fav.url))
+    .filter((fav) => fav.warm && /^(https?|file):/i.test(fav.url) && !open.has(fav.url))
     .map((fav) => fav.url);
 }
+
+// A start every this many milliseconds: several preloaded favourites are one
+// queue, not a burst of renderers competing with the page the user is on.
+const WARM_STAGGER_MS = 600;
+let warmStaggerUntil = 0;
 
 function startWarmPage(url) {
   const view = newView(tabPreferences());
@@ -328,59 +340,76 @@ function startWarmPage(url) {
   // A preloaded page is nobody's tab yet: a link it opens by itself must not
   // create one behind the user's back.
   wc.setWindowOpenHandler(() => ({ action: 'deny' }));
-  const entry = { view, url, loadedAt: 0, done: false, failed: false };
+  const entry = {
+    view,
+    url,
+    loadedAt: 0,
+    done: false,
+    failed: false,
+    started: false,
+    timer: null,
+    load() {
+      if (entry.started) return;
+      entry.started = true;
+      entry.timer = null;
+      if (wc.isDestroyed()) {
+        entry.failed = true;
+        return;
+      }
+      mark(`warm start ${url}`);
+      wc.loadURL(url).catch(() => {
+        entry.failed = true;
+      });
+    },
+    // A tab takes this page before its turn came: load it now, on the keystroke.
+    activate() {
+      clearTimeout(entry.timer);
+      entry.load();
+    },
+    close() {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+      mark(`warm drop ${url}`);
+      if (!wc.isDestroyed()) wc.close();
+    },
+  };
   wc.once('did-finish-load', () => {
     entry.loadedAt = Date.now();
     entry.done = true;
     mark(`warm ready ${url}`);
   });
-  wc.once('did-fail-load', (_event, code, description, validatedURL, isMainFrame) => {
+  wc.once('did-fail-load', (_event, code, description, _validatedURL, isMainFrame) => {
     if (!isMainFrame) return;
     entry.failed = true;
     mark(`warm failed ${url}: ${description || code}`);
   });
-  mark(`warm start ${url}`);
-  wc.loadURL(url).catch(() => {
-    entry.failed = true;
-  });
-  warmPages.set(url, entry);
+  const now = Date.now();
+  const delay = Math.max(0, warmStaggerUntil - now);
+  warmStaggerUntil = Math.max(now, warmStaggerUntil) + WARM_STAGGER_MS;
+  entry.timer = setTimeout(entry.load, delay);
   return entry;
 }
 
 /**
- * Make the pool match the user's choice: drop what is no longer a favourite or
- * no longer switched on, start what is missing. Called at startup, after a
- * favourite changes and after settings are saved.
+ * Make the pool match the user's choice: drop what is no longer a favourite,
+ * no longer switched on, or now open in a window — and start what is missing.
+ * Called at startup, after a favourite changes and after settings are saved.
  */
 function syncWarmPages() {
   if (!config || !visited) return;
-  const want = new Set(desiredWarmUrls());
-  for (const [url, entry] of warmPages) {
-    if (want.has(url)) continue;
-    warmPages.delete(url);
-    mark(`warm drop ${url}`);
-    if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
-  }
-  for (const url of want) {
-    if (!warmPages.has(url)) startWarmPage(url);
-  }
+  preloads.sync(desiredWarmUrls());
 }
 
 /** A pooled view for this address, or null — the tab then loads normally. */
 function takeWarmPage(url) {
-  const entry = warmPages.get(url);
-  if (!entry) return null;
-  warmPages.delete(url);
-  const wc = entry.view.webContents;
-  if (wc.isDestroyed() || entry.failed) {
-    if (!wc.isDestroyed()) wc.close();
-    mark('warm dropped');
-    setImmediate(syncWarmPages);
-    return null;
+  const entry = preloads.take(url);
+  if (entry) {
+    // Its turn had not come: the keystroke starts it instead of waiting.
+    entry.activate();
+    mark('warm used');
   }
-  mark('warm used');
   // Replace it off the keystroke, so the next open of this favourite finds a
-  // page ready too.
+  // page ready too. A failed page is replaced just the same.
   setImmediate(syncWarmPages);
   return entry;
 }
@@ -632,6 +661,9 @@ class Browser {
     this.win = undefined;
 
     windows.delete(this);
+    // A parked browser holds no preloaded renderer: with no window open there
+    // is nothing for them to make instant, so the memory goes back.
+    if (!windows.size) syncWarmPages();
     // Closing the last window leaves its tabs on disk, so a resident relaunch
     // (or the next cold start) opens what the user was just looking at.
     remembered = windows.size ? null : this.finalSnapshot;
@@ -1230,6 +1262,9 @@ class Browser {
     const inSplit = this.split && (id === this.split.a || id === this.split.b);
     const otherId = inSplit ? (this.split.a === id ? this.split.b : this.split.a) : null;
     this.tabs.delete(id);
+    // A favourite that was open is no longer taking its renderer: it can be
+    // kept ready again. Deferred, so closing a tab stays a keystroke.
+    setImmediate(syncWarmPages);
     if (tab.view) {
       if (tab.attached) {
         this.win.contentView.removeChildView(tab.view);
@@ -1883,7 +1918,7 @@ ipcMain.on('sidebar:action', (event, action) => {
   else if (action.type === 'new') window.createTab({ openBar: true });
 });
 
-ipcMain.handle('panel:get', (_event, page) => {
+ipcMain.handle('panel:get', (event, page) => {
   if (page === 'extensions') return extensionsPayload();
   return {
     config,
@@ -1893,8 +1928,90 @@ ipcMain.handle('panel:get', (_event, page) => {
     // The settings page lists the favourites so each one can be switched on
     // for preloading; the flag travels with the entry.
     favourites: visited.favourites().map((fav) => ({ url: fav.url, title: fav.title, warm: Boolean(fav.warm) })),
+    ...sessionsPayload(ctxFor(event)),
   };
 });
+
+/** The saved sessions as the settings page lists them, and which one this window shows. */
+function sessionsPayload(window) {
+  const showing = window?.workspaceName?.toLowerCase() ?? null;
+  return {
+    sessions: (workspaces?.list() ?? []).map((entry) => ({
+      name: entry.name,
+      tabs: entry.tabs.length,
+      savedAt: entry.savedAt,
+      current: showing !== null && entry.name.toLowerCase() === showing,
+    })),
+  };
+}
+
+/** Every open settings page hears about a change, whichever window made it. */
+function announceSessions() {
+  for (const window of windows) {
+    if (!window.panelVisible || !window.panel) continue;
+    window.panel.webContents.send('sessions:changed', sessionsPayload(window));
+  }
+}
+
+/**
+ * What the settings page's session rows do. Renaming and forgetting a set also
+ * follows it into the windows that are showing it: a window renamed keeps its
+ * next save under the new name, and one whose set was deleted stops claiming a
+ * name, so it starts a fresh rolling slot instead of resurrecting the entry.
+ */
+ipcMain.handle('sessions:action', (event, request) => {
+  const window = ctxFor(event);
+  if (!window) return { ok: false, error: 'no window' };
+  const action = String(request?.action ?? '');
+  const name = normalizeName(request?.name);
+  if (action === 'save') {
+    const state = window.workspaceState();
+    const chosen = name || autoName(state.tabs, state.activeTab, workspaces.list().map((entry) => entry.name));
+    const entry = workspaces.save(chosen, state);
+    if (!entry) return { ok: false, error: 'the session needs a name' };
+    window.workspaceName = entry.name;
+    window.persistTabs();
+    announceSessions();
+    return { ok: true, ...sessionsPayload(window) };
+  }
+  const entry = name ? workspaces.get(name) : null;
+  if (!entry) return { ok: false, error: name ? `no session called "${name}"` : `${action} which session?` };
+  if (action === 'rename') {
+    const next = normalizeName(request?.to);
+    if (!next) return { ok: false, error: 'the session needs a name' };
+    const renamed = workspaces.rename(name, next);
+    if (!renamed) return { ok: false, error: `there is already a session called "${next}"` };
+    for (const other of windows) {
+      if (other.workspaceName?.toLowerCase() !== name.toLowerCase()) continue;
+      other.workspaceName = renamed.name;
+      other.persistTabs();
+    }
+    announceSessions();
+    return { ok: true, ...sessionsPayload(window) };
+  }
+  if (action === 'delete') {
+    workspaces.remove(name);
+    for (const other of windows) {
+      if (other.workspaceName?.toLowerCase() !== name.toLowerCase()) continue;
+      other.workspaceName = null;
+      other.persistTabs();
+    }
+    announceSessions();
+    return { ok: true, ...sessionsPayload(window) };
+  }
+  if (action === 'open') {
+    // Switching writes the window's own tabs back first, so this is the same
+    // way back the picker gives — the panel then goes away and the tabs are
+    // what is left on screen.
+    const failure = switchWorkspace(window, entry);
+    if (failure) return { ok: false, error: failure };
+    window.closePanel();
+    announceSessions();
+    return { ok: true, ...sessionsPayload(window) };
+  }
+  return { ok: false, error: `unknown session action "${action}"` };
+});
+
 /**
  * The settings page sends the whole form: three scalars and every keybinding
  * as the text the user typed. Bindings are parsed here, so a row that does not
