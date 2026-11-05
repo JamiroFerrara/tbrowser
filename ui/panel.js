@@ -376,13 +376,23 @@ function renderSettings(data) {
 
   save.addEventListener('click', async () => {
     save.disabled = true;
-    const result = await window.panel.saveSettings(collect());
+    let result;
+    try {
+      result = await window.panel.saveSettings(collect());
+    } catch (err) {
+      // A failed save must never leave the button dead with nothing said.
+      save.disabled = false;
+      setStatus(`could not save: ${err.message}`, 'err');
+      return;
+    }
     save.disabled = false;
     if (!result.ok) {
       setStatus(result.error, 'err');
       return;
     }
-    renderSettings({ config: result.config });
+    // The browser answers with what it stored, switches included: the form
+    // then shows the state it will obey rather than the boxes it just sent.
+    renderSettings({ config: result.config, favourites: result.favourites });
     setStatus('Saved — every change is already in effect.', 'ok');
   });
   revert.addEventListener('click', () => {

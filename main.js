@@ -1936,10 +1936,15 @@ ipcMain.handle('panel:get', (event, page) => {
     dirs: extensionDirs,
     // The settings page lists the favourites so each one can be switched on
     // for preloading; the flag travels with the entry.
-    favourites: visited.favourites().map((fav) => ({ url: fav.url, title: fav.title, warm: Boolean(fav.warm) })),
+    favourites: favouritesPayload(),
     ...sessionsPayload(ctxFor(event)),
   };
 });
+
+/** The favourites as the settings form needs them: address, title, switch. */
+function favouritesPayload() {
+  return visited.favourites().map((fav) => ({ url: fav.url, title: fav.title, warm: Boolean(fav.warm) }));
+}
 
 /** The saved sessions as the settings page lists them, and which one this window shows. */
 function sessionsPayload(window) {
@@ -2044,7 +2049,9 @@ ipcMain.handle('settings:save', (event, patch) => {
   // change, so a favourite added in another window keeps the choice it has.
   for (const [url, warm] of Object.entries(patch.warm ?? {})) visited.setWarm(url, Boolean(warm));
   applyConfig(next, 'panel', event.sender);
-  return { ok: true, config };
+  // The form re-renders from what was stored, not from what it sent: the
+  // switches it shows after a save are the ones the browser will obey.
+  return { ok: true, config, favourites: favouritesPayload() };
 });
 ipcMain.handle('panel:rescan', async () => {
   await loadExtensions(ses, extensionDirs, { skip: disabledExtensions });
