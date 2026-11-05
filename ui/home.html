@@ -3,15 +3,88 @@
 <head>
 <meta charset="utf-8">
 <meta name="color-scheme" content="dark light">
+<title>New tab</title>
+<link rel="stylesheet" href="theme.css">
 <style>
-  /* The empty tab: one canvas and nothing else. It carries the same two colors
-     as the chrome so a new tab is not the one white rectangle on the screen. */
-  html { height: 100%; background: #1b1b1b; }
-  body { margin: 0; height: 100%; }
-  @media (prefers-color-scheme: light) {
-    html { background: #f5f5f5; }
+  /* The empty tab: the splash neovim shows on a bare buffer -- one Matrix quote
+     picked at random, centered, nothing else. It reads the shared palette, so
+     the page is the chrome's own surface (catppuccin base) and the quote is the
+     blue nvim paints the dashboard header with (SnacksDashboardHeader, which
+     links to Title). */
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+    color: var(--accent);
+    /* The editor's face at the terminal's size: 12pt, a terminal row tall. */
+    font: 400 12pt/1.35 var(--font);
+    /* The quote is the splash, not a paragraph: wrapping would break the lines
+       the quotes were written to, and a line the window is too narrow for
+       overhangs both edges the way it does past the editor's float. */
+    white-space: pre;
+    text-align: center;
+    user-select: none;
   }
 </style>
 </head>
-<body></body>
+<body><div id="quote"></div>
+<script>
+  /* The dashboard's quote pool (lua/plugins/snacks_dashboard.lua): one of them
+     per new tab, in the same order and with the same line breaks. */
+  const QUOTES = [
+    "wake up neo.",
+    "Unfortunately, no one can be told what the Matrix is. \n You have to see it for yourself.",
+    "Fate, it seems, is not without a sense of irony",
+    "Guns, lots of guns",
+    "I’m trying to free your mind, Neo. But I can only show you the door. \n You’re the one that has to walk through it",
+    "I don’t like the idea that I’m not in control of my life",
+    "What are you waiting for? \n You’re faster than this. Don’t think you are, know you are.",
+    "If real is what you can feel, smell, taste and see, \n then ‘real’ is simply electrical signals interpreted by your brain",
+    "Stop trying to hit me and hit me!",
+    "I know Kung Fu.",
+    "There is no spoon.",
+    "You take the red pill, you stay in Wonderland, \n and I show you how deep the rabbit hole goes.",
+    "Welcome to the real world.",
+    "I can only show you the door. You’re the one who has to walk through it.",
+    "Ignorance is bliss.",
+    "The body cannot live without the mind.",
+    "To deny our own impulses is to deny the very thing that makes us human.",
+    "You have a problem with authority, Mr. Anderson.",
+    "Not like this. Not like this.",
+    "There is no escaping reason; no denying purpose.",
+    "Neo, sooner or later you’re going to realize, \n just as I did, there’s a difference between knowing the path, \n and walking the path.",
+    "Hope. It is the quintessential human delusion, \n simultaneously the source of your greatest strength and your greatest weakness.",
+    "Choice is an illusion created between those with power and those without.",
+    "What do men with power want? More power.",
+    "I’m going to show them a world... \n where anything is possible.",
+    "You hear that Mr. Anderson? That is the sound of inevitability.",
+    "What if tomorrow the war could be over?",
+    "The Matrix cannot tell you who you are.",
+    "Every mammal on this planet instinctively develops a natural equilibrium with the surrounding environment.",
+    "I know why you can’t sleep. I know what you’ve been doing.",
+    "There is a difference between knowing the path and walking the path.",
+    "It's unlike anything we've seen before.",
+    "Never send a human to do a machine's job.",
+    "Zion will fall.",
+    "I'm trying to free your mind, Neo.",
+    "What do all men with power want?",
+    "Why, Mr. Anderson, why?",
+    "The program Smith has grown beyond your control.",
+    "What is 'real'? How do you define 'real'?",
+    "I think we can handle one little girl.",
+    "Denial is the most predictable of all human responses.",
+    "I believe this night holds for each and every one of us, the very meaning of our lives.",
+    "The Matrix is a world that has been pulled over your eyes.",
+    "I want the same thing you want, Neo, and I am willing to go as far as you are.",
+    "I have dreamed a dream, but now that my dream is over.",
+    "As you can see, we've had our eye on you for some time now, Mr. Anderson.",
+    "They’re watching you, Neo.",
+    "It's the question that drives us, Neo."
+  ];
+  document.getElementById('quote').textContent = QUOTES[Math.floor(Math.random() * QUOTES.length)];
+</script>
+</body>
 </html>

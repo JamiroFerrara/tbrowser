@@ -349,10 +349,11 @@ class Browser {
     this.focusContent();
     this.updateSidebar();
     mark('page created');
-    if (!savedTabs.length) {
-      await barReady;
-      this.showBar();
-    }
+    // The palette is where a launch starts typing, so the bar comes up and
+    // takes the focus on every window, not only the empty one: a restored
+    // session lands with the caret in the bar instead of in the page.
+    await barReady;
+    this.showBar();
 
     // Warm the panel and the spare chrome after the window is up: the first
     // `:extensions` and the next ctrl+n then cost nothing.
