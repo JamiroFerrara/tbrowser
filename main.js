@@ -255,6 +255,50 @@ function warmChrome() {
   }
 }
 
+/**
+ * The empty tab is the same page every time, and starting a renderer for it on
+ * the keystroke is what made ctrl+t wait seconds for a splash that never
+ * changes. One view is kept loaded and painted here, so a new tab swaps it in
+ * already showing: the quote is on screen in the same frame as the tab, and
+ * nothing about the new tab waits on a renderer.
+ *
+ * The spare is never wired to a window until it is taken, so it holds no keys
+ * and no page state; taking it starts the next spare in the background.
+ */
+const freeTabs = [];
+
+function tabPreferences() {
+  return {
+    partition: PARTITION,
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    spellcheck: false,
+  };
+}
+
+function warmTab() {
+  if (freeTabs.length) return;
+  mark('tab warming');
+  const view = newView(tabPreferences());
+  view.webContents.loadURL(HOME).catch(() => {});
+  freeTabs.push(view);
+}
+
+/** A ready home view, or null when the pool is still cold. */
+function takeWarmTab() {
+  while (freeTabs.length) {
+    const view = freeTabs.pop();
+    if (!view.webContents.isDestroyed()) {
+      mark('tab reused');
+      setImmediate(warmTab);
+      return view;
+    }
+    mark('tab dropped');
+  }
+  return null;
+}
+
 class Browser {
   constructor(snapshot = {}) {
     this.id = nextWindowId++;
@@ -281,7 +325,10 @@ class Browser {
     this.panelEditing = false;
 
     this.sidebar = undefined;
-    this.sidebarVisible = snapshot.sidebar !== false;
+    // A tool the user calls with ctrl+e, never part of what a window opens
+    // with: a new window and a restored instance both start on the whole page,
+    // and only a toggle made in a window brings its sidebar out.
+    this.sidebarVisible = false;
     this.sidebarLoaded = false;
     this.sidebarReady = null;
     this.barLoaded = false;
@@ -348,9 +395,9 @@ class Browser {
    */
   async build() {
     const win = this.win;
-    await prepareSession();
-    mark('session ready');
-
+    // The bar is the launch surface and needs nothing from the session: its
+    // renderer starts now, beside the extensions instead of behind them, so
+    // the palette is up as early as the window allows.
     const barEntry = chromeView('bar', 'index.html', 'preload.js');
     const bar = barEntry.view;
     this.bar = bar;
@@ -366,6 +413,9 @@ class Browser {
       this.pendingBar = null;
       if (pending) this.showBar(pending);
     });
+
+    await prepareSession();
+    mark('session ready');
 
     if (this.sidebarVisible) {
       const view = this.ensureSidebar();
@@ -385,11 +435,19 @@ class Browser {
           // is the empty one, so it opens on the home page.
           .map((url) => (url === BLANK ? HOME : url))
       : [];
+    // A launch builds its tabs without focusing them: the page's focus call
+    // lands whenever its renderer finishes, which is after the bar's and took
+    // the caret back. The palette is the launch surface, so it is what holds
+    // the focus, and it comes up as soon as its own renderer is ready.
     const startUrls = savedTabs.length ? savedTabs : [HOME];
-    startUrls.forEach((url, index) => this.createTab({ url, activate: index === 0 }));
+    startUrls.forEach((url, index) =>
+      this.createTab({ url, activate: index === 0, focus: false }),
+    );
     if (typeof this.saved.activeTab === 'number') {
       const ids = [...this.tabs.keys()];
-      if (ids[this.saved.activeTab] !== undefined) this.activateTab(ids[this.saved.activeTab]);
+      if (ids[this.saved.activeTab] !== undefined) {
+        this.activateTab(ids[this.saved.activeTab], { focus: false });
+      }
     }
     const savedSplit = this.saved.split;
     if (savedSplit) {
@@ -406,33 +464,19 @@ class Browser {
     this.layout();
     this.updateSidebar();
     mark('page created');
-    // The palette is where a launch starts typing, so the bar comes up and
-    // takes the focus on every window, not only the empty one: a restored
-    // session lands with the caret in the bar instead of in the page. The page
-    // is not focused first — that call would land after the bar's and take the
-    // caret back.
+    // Waited for last, so the pages start loading beside the bar instead of
+    // behind it: the bar only holds the launch back if its own renderer is
+    // slower than the page's, and nothing else waits on either.
     await barReady;
     this.showBar();
-    // A window's first page takes the focus when its renderer finishes
-    // loading, which can be after the bar's own call has already been made:
-    // the caret then lands in the page and the palette sits unfocused. Take it
-    // back at the end of that load, once, if the bar is still the one up.
-    const firstPage = this.activeTab()?.view?.webContents;
-    if (firstPage && firstPage.isLoading()) {
-      firstPage.once('did-stop-loading', () => {
-        if (!this.barVisible || !this.bar) return;
-        const front = webContents.getFocusedWebContents();
-        if (front && front !== firstPage) return;
-        this.bar.webContents.focus();
-      });
-    }
-
-    // Warm the panel and the spare chrome after the window is up: the first
-    // `:extensions` and the next ctrl+n then cost nothing.
+    // Warm the panel, the spare chrome and the spare empty tab after the
+    // window is up: the first `:extensions`, the next ctrl+n and the next
+    // ctrl+t then cost nothing.
     setImmediate(() => {
       if (!this.win) return;
       if (!this.panel) this.ensurePanel();
       warmChrome();
+      warmTab();
     });
   }
 
@@ -542,7 +586,6 @@ class Browser {
       activeTab: state.activeTab,
       split: state.split,
       workspace: this.workspaceName,
-      sidebar: this.sidebarVisible,
     };
   }
 
@@ -871,6 +914,24 @@ class Browser {
     );
   }
 
+  /**
+   * Take the tab's own wiring off a view before it goes back to the pool, so
+   * the window that takes it next does not hear about a tab that is gone.
+   */
+  unwireTab(wc) {
+    for (const event of [
+      'page-title-updated',
+      'did-navigate',
+      'did-navigate-in-page',
+      'focus',
+      'before-input-event',
+    ]) {
+      wc.removeAllListeners(event);
+    }
+    wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+    viewOwners.delete(wc.id);
+  }
+
   wireTab(tab) {
     const wc = tab.view.webContents;
 
@@ -921,21 +982,30 @@ class Browser {
   /** Create a tab's renderer on first use; a restored tab costs nothing until then. */
   tabView(tab) {
     if (tab.view) return tab.view;
-    const view = newView({
-      partition: PARTITION,
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      spellcheck: false,
-    });
+    // An empty tab takes the splash that is already loaded and painted; only a
+    // tab with an address of its own pays for a renderer.
+    const warm = tab.url === HOME ? takeWarmTab() : null;
+    if (!warm) mark('tab renderer new');
+    const view = warm ?? newView(tabPreferences());
     tab.view = view;
     track(this, view);
     this.wireTab(tab);
-    view.webContents.loadURL(tab.url || HOME).catch(() => {});
+    if (warm) {
+      // The spare already has a quote painted; this tab gets its own, and the
+      // swap costs a text change rather than a page load.
+      view.webContents.executeJavaScript('window.rollQuote?.()').catch(() => {});
+      return view;
+    }
+    const wc = view.webContents;
+    // A new tab is a keystroke: the gap between the press and the page on
+    // screen is what these two marks measure.
+    wc.once('dom-ready', () => mark('tab dom-ready'));
+    wc.once('did-finish-load', () => mark('tab painted'));
+    wc.loadURL(tab.url || HOME).catch(() => {});
     return view;
   }
 
-  createTab({ url = HOME, activate = true, openBar = false } = {}) {
+  createTab({ url = HOME, activate = true, openBar = false, focus = true } = {}) {
     const id = this.nextTabId++;
     const tab = { id, view: null, title: '', url, attached: false };
     this.tabs.set(id, tab);
@@ -943,7 +1013,7 @@ class Browser {
     // A tab whose bar opens hands the focus to the bar instead of the page:
     // two focus calls in a row let the page's land last, which left the caret
     // in the new page rather than in the palette that had just opened.
-    if (activate) this.activateTab(id, { focus: !openBar });
+    if (activate) this.activateTab(id, { focus: focus && !openBar });
     else this.updateSidebar();
     this.persistTabs();
     if (openBar) this.showBar();
@@ -1015,7 +1085,18 @@ class Browser {
       }
       // A tab whose renderer crashed still has its view, and closing a
       // destroyed webContents throws — which used to stop the close below.
-      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+      const wc = tab.view.webContents;
+      if (!wc.isDestroyed()) {
+        // An empty tab was the splash: closing it hands the painted page back to
+        // the pool for the next ctrl+t, so it never pays for another renderer.
+        if (wc.getURL() === HOME && freeTabs.length === 0) {
+          mark('tab parked');
+          this.unwireTab(wc);
+          freeTabs.push(tab.view);
+        } else {
+          wc.close();
+        }
+      }
     }
     if (inSplit) {
       // One pane is left, so the split goes with the tab; the surviving pane
@@ -1882,6 +1963,10 @@ function prepareSession() {
   if (sessionReady) return sessionReady;
   sessionReady = (async () => {
     ses = session.fromPartition(PARTITION);
+    // The empty tab is a local file that needs nothing from the session's
+    // extensions: start it now, beside them, so a cold launch already has the
+    // splash painted by the time the window builds its first tab.
+    warmTab();
     extensionDirs = [
       unpacked(path.join(__dirname, 'extensions')),
       unpacked(path.join(__dirname, 'vendor')),

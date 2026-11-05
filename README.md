@@ -199,6 +199,10 @@ face and catppuccin blue, and nothing else.
 The bar is up and focused on every launch and every new tab, so the first thing
 you type is a search without reaching for a key first.
 
+The page is not built for the tab: one is kept loaded and painted in the
+background (`warmTab`), so `Ctrl+T` swaps in a splash that is already on screen
+and only picks a new quote. An empty tab you close goes back into that pool.
+
 ## Extensions
 
 Three directories are scanned at startup; each subfolder with a `manifest.json`

@@ -95,6 +95,12 @@
     "It's the question that drives us, Neo."
   ];
   document.getElementById('quote').textContent = QUOTES[Math.floor(Math.random() * QUOTES.length)];
+  // A pooled view is handed from one new tab to the next, so the page must be
+  // able to pick a fresh quote without being reloaded.
+  window.rollQuote = () => {
+    document.getElementById('quote').textContent =
+      QUOTES[Math.floor(Math.random() * QUOTES.length)];
+  };
 </script>
 </body>
 </html>

@@ -16,7 +16,7 @@ is the user-facing description — this file is how to change the thing.
 - `vendor/vimium` — patched Vimium 2.4.2 (see README)
 - `test/` — `node --test` suites
 
-## The three standing rules
+## The four standing rules
 
 **1. Every change is installed in the system, not just written.**
 
@@ -90,6 +90,31 @@ and close it as soon as you have looked:
 taskkill /IM tbrowser.exe /F
 ```
 
+**4. Speed is the feature: a keystroke is on screen before it is felt.**
+
+The product is the gap between the key and the result — a new tab, a new
+window, a page you have already been to, a character typed in the command bar.
+Every one of those is a path that must not start a renderer, touch the network
+or walk the disk.
+
+- Chrome and the empty tab come from pools of running renderers: `warmChrome`
+  keeps a spare bar and sidebar, `warmTab` a spare new-tab page. A path *takes*
+  a pooled view; the pool refills itself afterwards, off the keystroke.
+- Work a keystroke triggers either is already warm or goes out of the way —
+  `setImmediate`, a background load, a promise nobody on screen awaits.
+- Decoration — the splash quote, a thumbnail, a badge — renders from a pooled
+  page and is redrawn there (see `rollQuote`), never reloaded.
+- Measure the path you touched, with the trace that already exists:
+
+```bash
+TBROWSER_TIMING=1 dist/tbrowser-win32-x64/tbrowser.exe --no-ui
+# per-step marks land in <userData>/startup.log
+```
+
+`window shown`, `page created`, `tab reused`, `tab dom-ready`, `tab painted`
+say where the milliseconds go. A change that adds a step between the key and
+the screen owes the marks it moved, in the hand-off, as numbers.
+
 ## Verification
 
 - `npm test` runs the command-parsing and config/keybinding suites. It does not
@@ -101,3 +126,5 @@ taskkill /IM tbrowser.exe /F
 - Report what was run. Never describe a check as passing when it was not run,
   and never claim a visual or interactive behaviour was validated when only
   unit tests ran.
+- A speed claim carries its marks from `startup.log` beside it (rule 4); a
+  number with no trace behind it was guessed.
