@@ -27,6 +27,7 @@ const { PreloadPool } = require('./lib/preload');
 const { suggestions } = require('./lib/suggest');
 const { Workspaces, normalizeName, autoName, LAST: LAST_WORKSPACE } = require('./lib/workspaces');
 const { splitBounds, edgeBounds } = require('./lib/layout');
+const { Jumps } = require('./lib/jumps');
 const { sharedTabs } = require('./lib/shared-tabs');
 
 const BAR_HEIGHT = 44;
@@ -572,6 +573,12 @@ class Browser {
     this.barMode = 'address';
     // The tab a split pairs with, and the tab focus came from.
     this.previousTabId = null;
+    // Every tab and page the keys have taken this window to, so Alt+O/Alt+I
+    // walk back and forward through them the way C-o/C-i do in the editor.
+    this.jumps = new Jumps();
+    // A jump is being restored: the activation and load it causes are the
+    // place the list already holds, not a new one to append.
+    this.pendingJump = null;
     // The named workspace this window is showing, when it came from one.
     this.workspaceName = null;
 
@@ -1101,6 +1108,7 @@ class Browser {
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
     this.updateSidebar();
     this.persistTabs();
+    this.recordJump();
   }
 
   /** Swap every tab for a saved set in one step, split included. */
@@ -1124,6 +1132,7 @@ class Browser {
     this.tabs.clear();
     this.activeTabId = null;
     this.previousTabId = null;
+    this.jumps.clear();
 
     const urls = Array.isArray(state.tabs) && state.tabs.length ? state.tabs : [HOME];
     const ids = urls.map((url) => {
@@ -1256,6 +1265,7 @@ class Browser {
     visited.record(tab.url, tab.title);
     updateSidebars();
     mark('tab warm');
+    if (tab.id === this.activeTabId) this.recordJump();
     return view;
   }
 
@@ -1362,6 +1372,82 @@ class Browser {
     }
     visited.record(tab.url, tab.title);
     updateSidebars();
+    this.recordJump();
+  }
+
+  // ------------------------------------------------------------------ jumps
+
+  /**
+   * Where the keys are now, as the jump list keeps it: the tab, the page it
+   * shows and, when its renderer is up, the step of its own history that page
+   * is — so going back to it can be a history step instead of a fresh load.
+   */
+  jumpPosition(tab = this.activeTab()) {
+    if (!tab) return null;
+    const wc = tab.view?.webContents;
+    const live = wc && !wc.isDestroyed();
+    return {
+      tabId: tab.id,
+      url: tab.url || HOME,
+      index: live ? wc.navigationHistory.getActiveIndex() : -1,
+    };
+  }
+
+  /** Note the place the keys just arrived at, unless the arrival was a jump. */
+  recordJump() {
+    const position = this.jumpPosition();
+    if (!position) return;
+    const pending = this.pendingJump;
+    if (pending && pending.tabId === position.tabId) {
+      // The activation a jump causes is the entry the cursor already holds.
+      if (pending.url === position.url) this.pendingJump = null;
+      return;
+    }
+    this.jumps.record(position);
+  }
+
+  /**
+   * Alt+O / Alt+I: the place `delta` away in the list, restored whole. In the
+   * same tab a page is reached by a step of its own history when it is there,
+   * so the jump costs no load; a tab moved between windows, or a page whose
+   * renderer was swapped away, falls back to the address.
+   */
+  goJump(delta) {
+    // Drop places whose tab is gone before moving, so one step lands on a tab
+    // that is really there: the list can outlive a close that bypassed it.
+    for (const entry of [...this.jumps.entries]) {
+      if (!this.tabs.has(entry.tabId)) this.jumps.forget(entry.tabId);
+    }
+    const entry = this.jumps.move(delta);
+    if (!entry) return false;
+    const tab = this.tabs.get(entry.tabId);
+    if (!tab) return false;
+    mark('tab jump');
+    const pending = { tabId: tab.id, url: entry.url };
+    this.pendingJump = pending;
+    // A navigation that never comes must not suppress a later real jump onto
+    // the same page.
+    setTimeout(() => {
+      if (this.pendingJump === pending) this.pendingJump = null;
+    }, 5000).unref?.();
+
+    this.activateTab(tab.id);
+    const wc = tab.view?.webContents;
+    if (!wc || wc.isDestroyed() || tab.url === entry.url) return true;
+    const history = wc.navigationHistory;
+    const entries = history.getAllEntries();
+    let at = entry.index >= 0 && entries[entry.index]?.url === entry.url ? entry.index : -1;
+    if (at === -1) at = entries.findIndex((item) => item.url === entry.url);
+    if (at !== -1) {
+      history.goToIndex(at);
+      return true;
+    }
+    if (URL_RE.test(entry.url)) {
+      wc.loadURL(entry.url).catch((err) => {
+        console.warn(`[tbrowser] jump failed: ${err.message}`);
+      });
+    }
+    return true;
   }
 
   /**
@@ -1413,7 +1499,10 @@ class Browser {
       tab.url = url;
       // The home page is the absence of a page; it is not a visit.
       if (url !== HOME) visited.record(url, tab.title);
-      if (tab.id === this.activeTabId) this.persistTabs();
+      if (tab.id === this.activeTabId) {
+        this.persistTabs();
+        this.recordJump();
+      }
       // The page the tab left is nobody's now: a favourite among them can be
       // kept ready again. Deferred, so the page that is on screen comes first.
       setImmediate(syncWarmPages);
@@ -1422,7 +1511,10 @@ class Browser {
       if (!isMainFrame) return;
       tab.url = url;
       if (url !== HOME) visited.record(url, tab.title);
-      if (tab.id === this.activeTabId) this.persistTabs();
+      if (tab.id === this.activeTabId) {
+        this.persistTabs();
+        this.recordJump();
+      }
     });
     // Clicking a page is how a split changes which pane the bar and the keys
     // act on. Outside a split this event has nothing to say.
@@ -1509,6 +1601,7 @@ class Browser {
       this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
       updateSidebars();
       this.persistTabs();
+      this.recordJump();
       return;
     }
     if (previous && previous.id !== id && previous.view) {
@@ -1529,6 +1622,7 @@ class Browser {
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
     updateSidebars();
     this.persistTabs();
+    this.recordJump();
   }
 
   closeTab(id) {
@@ -1537,6 +1631,7 @@ class Browser {
     const inSplit = this.split && (id === this.split.a || id === this.split.b);
     const otherId = inSplit ? (this.split.a === id ? this.split.b : this.split.a) : null;
     this.tabs.delete(id);
+    this.jumps.forget(id);
     // A favourite that was open is no longer taking its renderer: it can be
     // kept ready again. Deferred, so closing a tab stays a keystroke.
     setImmediate(syncWarmPages);
@@ -1720,6 +1815,16 @@ class Browser {
     }
     if (matchesAny(input, keys.forward)) {
       this.go(1);
+      return true;
+    }
+    // Alt+O / Alt+I walk the window's jumps — every tab and page the keys
+    // took it to — the way C-o/C-i walk the editor's jump list.
+    if (matchesAny(input, keys.jumpBack)) {
+      this.goJump(-1);
+      return true;
+    }
+    if (matchesAny(input, keys.jumpForward)) {
+      this.goJump(1);
       return true;
     }
     if (matchesAny(input, keys.newTab)) {

@@ -12,6 +12,8 @@ const ACTION_LABELS = {
   reload: 'Reload page',
   back: 'Back',
   forward: 'Forward',
+  jumpBack: 'Jump back (last tab or page)',
+  jumpForward: 'Jump forward',
   newTab: 'New tab',
   closeTab: 'Close tab',
   nextTab: 'Next tab',

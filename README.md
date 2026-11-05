@@ -52,7 +52,8 @@ platform-specific. WSL users: run these commands from Windows, or package with
 | `Ctrl+1` … `Ctrl+8` | go to that tab |
 | `Ctrl+9` | go to the last tab |
 | `Ctrl+R`, `F5` | reload |
-| `Alt+Left` / `Alt+Right` | back / forward |
+| `Alt+Left` / `Alt+Right` | back / forward on this page |
+| `Alt+O` / `Alt+I` | jump back / forward through tabs and pages |
 | `Alt+P` | open the workspace picker |
 | `Alt+S` / `Alt+Shift+S` | split side by side / stacked |
 | `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move between the two panes |
@@ -85,6 +86,8 @@ Everything is rebindable in `config.json` (created on first run):
     "reload": ["ctrl+r", "f5"],
     "back": ["alt+left"],
     "forward": ["alt+right"],
+    "jumpBack": ["alt+o"],
+    "jumpForward": ["alt+i"],
     "workspaces": ["alt+p"],
     "splitVertical": ["alt+s"],
     "splitHorizontal": ["alt+shift+s"],
