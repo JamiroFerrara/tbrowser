@@ -13,11 +13,14 @@ const { loadExtensions } = require('./lib/extensions');
 const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
 const { suggestions } = require('./lib/suggest');
+const { Workspaces, normalizeName, autoName, LAST: LAST_WORKSPACE } = require('./lib/workspaces');
 
 const BAR_HEIGHT = 44;
 const BAR_ROW = 32;
 const BAR_PAD = 8;
 const SIDEBAR_WIDTH = 220;
+const SPLIT_GAP = 2; // the line between two panes, drawn by the window behind them
+const SPLIT_ANIM_MS = 140;
 const PARTITION = 'persist:tbrowser';
 // The new-tab page is a local file, not about:blank: Chromium paints a blank
 // document white whatever the theme, so the first thing a launch showed was a
@@ -83,6 +86,7 @@ let ses; // persistent session
 let config;
 let configPath;
 let visited; // visited pages + favourites, ranked by frecency
+let workspaces; // named tab sets, the browser's sessions
 let keys; // keybindings pre-parsed once
 let extensionDirs = [];
 let sessionReady = null;
@@ -284,6 +288,18 @@ class Browser {
     this.sidebarAttached = false;
     this.pageLayouts = 0;
 
+    // Two panes over one window: `a` and `b` are tab ids kept in a fixed
+    // order, so focusing the other one does not swap the pictures around.
+    this.split = null;
+    this.splitProgress = 1;
+    this.splitAnim = null;
+    // The command bar's current shape; the workspace picker is one of them.
+    this.barMode = 'address';
+    // The tab a split pairs with, and the tab focus came from.
+    this.previousTabId = null;
+    // The named workspace this window is showing, when it came from one.
+    this.workspaceName = null;
+
     this.persistTimer = null;
     this.finalSnapshot = null;
   }
@@ -310,6 +326,7 @@ class Browser {
     win.on('close', () => {
       this.finalSnapshot = this.snapshot();
       this.persistTabsNow();
+      this.saveWorkspaceOnClose();
       this.detachChrome();
     });
     win.on('closed', () => this.release());
@@ -375,6 +392,16 @@ class Browser {
       const ids = [...this.tabs.keys()];
       if (ids[this.saved.activeTab] !== undefined) this.activateTab(ids[this.saved.activeTab]);
     }
+    const savedSplit = this.saved.split;
+    if (savedSplit) {
+      const ids = [...this.tabs.keys()];
+      const a = ids[savedSplit.a];
+      const b = ids[savedSplit.b];
+      if (a !== undefined && b !== undefined && a !== b) {
+        this.attachSplit(a, b, savedSplit.orientation === 'horizontal' ? 'horizontal' : 'vertical');
+      }
+    }
+    this.workspaceName = normalizeName(this.saved.workspace) || null;
     this.saved = {};
 
     this.layout();
@@ -438,6 +465,13 @@ class Browser {
     this.tabs.clear();
     this.activeTabId = null;
     clearTimeout(this.persistTimer);
+    clearInterval(this.splitAnim);
+    this.split = null;
+    this.splitAnim = null;
+    this.splitProgress = 1;
+    this.previousTabId = null;
+    this.workspaceName = null;
+    this.barMode = 'address';
     this.bar = undefined;
     this.barEntry = undefined;
     this.panel = undefined;
@@ -492,19 +526,49 @@ class Browser {
   // ------------------------------------------------------------------- state
 
   snapshot() {
+    const state = this.workspaceState();
     return {
       bounds: this.win && !this.win.isDestroyed() ? this.win.getBounds() : this.saved.bounds,
-      // A tab whose renderer is gone has no URL to read, and asking a destroyed
-      // webContents throws. The tab's last recorded url still names the page,
-      // and this runs while the window closes: a throw here keeps it open.
-      tabs: [...this.tabs.values()].map((tab) =>
-        tab.view?.webContents.isDestroyed() === false
-          ? tab.view.webContents.getURL() || tab.url || HOME
-          : tab.url || HOME,
-      ),
-      activeTab: [...this.tabs.keys()].indexOf(this.activeTabId),
+      tabs: state.tabs,
+      activeTab: state.activeTab,
+      split: state.split,
+      workspace: this.workspaceName,
       sidebar: this.sidebarVisible,
     };
+  }
+
+  /** A tab's address, read live when its page still exists. */
+  urlOf(tab) {
+    // A tab whose renderer is gone has no URL to read, and asking a destroyed
+    // webContents throws. The tab's last recorded url still names the page,
+    // and this runs while the window closes: a throw here keeps it open.
+    return tab.view?.webContents.isDestroyed() === false
+      ? tab.view.webContents.getURL() || tab.url || HOME
+      : tab.url || HOME;
+  }
+
+  /** The window as a workspace: its tabs, the focused one, and any split. */
+  workspaceState() {
+    const ids = [...this.tabs.keys()];
+    return {
+      tabs: [...this.tabs.values()].map((tab) => this.urlOf(tab)),
+      activeTab: Math.max(0, ids.indexOf(this.activeTabId)),
+      split: this.split
+        ? {
+            a: ids.indexOf(this.split.a),
+            b: ids.indexOf(this.split.b),
+            orientation: this.split.orientation,
+          }
+        : null,
+    };
+  }
+
+  /** Remember the tabs under this window's workspace name, if it has one. */
+  saveWorkspaceOnClose() {
+    if (!this.workspaceName) return;
+    const state = this.workspaceState();
+    if (!state.tabs.length) return;
+    workspaces?.save(this.workspaceName, state);
   }
 
   persistTabsNow() {
@@ -539,7 +603,28 @@ class Browser {
       place(this.sidebar, { x: 0, y: 0, width: SIDEBAR_WIDTH, height });
     }
     const tab = this.activeTab();
-    if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
+    if (this.split) {
+      const a = this.tabs.get(this.split.a);
+      const b = this.tabs.get(this.split.b);
+      const va = a?.view;
+      const vb = b?.view;
+      // `splitProgress` is the opening slide: 0 is one page, 1 is two.
+      const progress = Math.max(0, Math.min(1, this.splitProgress));
+      const gap = progress > 0 ? SPLIT_GAP : 0;
+      if (va && vb) {
+        if (this.split.orientation === 'horizontal') {
+          const half = Math.round(((contentHeight - gap) * progress) / 2);
+          const top = contentHeight - gap - half;
+          if (place(va, { x: 0, y: 0, width, height: top })) this.pageLayouts += 1;
+          if (place(vb, { x: 0, y: top + gap, width, height: half })) this.pageLayouts += 1;
+        } else {
+          const half = Math.round(((width - gap) * progress) / 2);
+          const left = width - gap - half;
+          if (place(va, { x: 0, y: 0, width: left, height: contentHeight })) this.pageLayouts += 1;
+          if (place(vb, { x: left + gap, y: 0, width: half, height: contentHeight })) this.pageLayouts += 1;
+        }
+      }
+    } else if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
       this.pageLayouts += 1;
     }
     const chromeX = this.sidebarVisible ? SIDEBAR_WIDTH : 0;
@@ -557,6 +642,163 @@ class Browser {
     target?.webContents.focus();
   }
 
+  // ------------------------------------------------------------------ panes
+
+  /**
+   * Two tabs over one window. `a` stays left (or top) and `b` right (or
+   * bottom) whatever the focus does, so switching between them never swaps
+   * the pictures; the focused one is simply the active tab.
+   */
+  attachSplit(a, b, orientation, { animate = false } = {}) {
+    if (!this.win) return;
+    const first = this.tabs.get(a);
+    const second = this.tabs.get(b);
+    if (!first || !second || a === b) return;
+    const viewA = this.tabView(first);
+    const viewB = this.tabView(second);
+    this.split = { a, b, orientation };
+    this.win.contentView.addChildView(viewA, 0);
+    this.win.contentView.addChildView(viewB, 0);
+    this.splitProgress = animate ? 0 : 1;
+    this.layout();
+    if (animate) this.animateSplit();
+    this.updateSidebar();
+    this.persistTabs();
+  }
+
+  /** Alt+S / Alt+Shift+S: open a split, turn it, or close it. */
+  toggleSplit(orientation) {
+    if (!this.win) return;
+    if (this.split) {
+      if (this.split.orientation === orientation) {
+        this.closeSplit();
+        return;
+      }
+      this.split.orientation = orientation;
+      clearInterval(this.splitAnim);
+      this.splitAnim = null;
+      this.splitProgress = 1;
+      this.layout();
+      this.persistTabs();
+      return;
+    }
+    const active = this.activeTab();
+    if (!active) return;
+    let partner =
+      this.previousTabId != null && this.previousTabId !== active.id
+        ? this.tabs.get(this.previousTabId)
+        : null;
+    if (!partner) partner = [...this.tabs.values()].find((tab) => tab.id !== active.id) ?? null;
+    // One tab has nothing to pair with, so the split asks for a second page.
+    if (!partner) partner = this.createTab({ activate: false });
+    this.attachSplit(active.id, partner.id, orientation, { animate: true });
+    this.activeTabId = active.id;
+  }
+
+  /** Close the split, keeping both tabs: the focused one fills the window. */
+  closeSplit() {
+    if (!this.split) return;
+    clearInterval(this.splitAnim);
+    this.splitAnim = null;
+    const otherId = this.activeTabId === this.split.a ? this.split.b : this.split.a;
+    const other = this.tabs.get(otherId);
+    if (other?.view) {
+      try {
+        this.win.contentView.removeChildView(other.view);
+      } catch {
+        // the view is already gone with the window
+      }
+    }
+    this.split = null;
+    this.splitProgress = 1;
+    this.layout();
+    this.updateSidebar();
+    this.persistTabs();
+  }
+
+  /**
+   * Focus the other pane without moving it. Electrons lets the click do this
+   * on its own (`wireTab` listens for focus), and Alt+H/J/K/L do it from the
+   * keyboard.
+   */
+  setActivePane(id, { focus = true } = {}) {
+    if (!this.split || id === this.activeTabId) return;
+    if (id !== this.split.a && id !== this.split.b) return;
+    const tab = this.tabs.get(id);
+    if (!tab) return;
+    this.previousTabId = this.activeTabId;
+    this.activeTabId = id;
+    const view = this.tabView(tab);
+    if (focus) view.webContents.focus();
+    this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
+    this.updateSidebar();
+    this.persistTabs();
+  }
+
+  /**
+   * A split is worth one short slide and no more: the pages reflow while the
+   * divider travels, so it is over before a page can feel it.
+   */
+  animateSplit() {
+    clearInterval(this.splitAnim);
+    const start = Date.now();
+    this.splitProgress = 0;
+    this.splitAnim = setInterval(() => {
+      if (!this.win || !this.split) {
+        clearInterval(this.splitAnim);
+        this.splitAnim = null;
+        return;
+      }
+      const t = Math.min(1, (Date.now() - start) / SPLIT_ANIM_MS);
+      this.splitProgress = 1 - (1 - t) ** 3;
+      this.layout();
+      if (t >= 1) {
+        clearInterval(this.splitAnim);
+        this.splitAnim = null;
+      }
+    }, 16);
+  }
+
+  /** Swap every tab for a saved set in one step, split included. */
+  replaceTabs(state) {
+    if (!this.win) return;
+    clearInterval(this.splitAnim);
+    this.splitAnim = null;
+    this.splitProgress = 1;
+    this.split = null;
+    for (const tab of this.tabs.values()) {
+      if (!tab.view) continue;
+      try {
+        this.win.contentView.removeChildView(tab.view);
+      } catch {
+        // the window is going away
+      }
+      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+    }
+    this.tabs.clear();
+    this.activeTabId = null;
+    this.previousTabId = null;
+
+    const urls = Array.isArray(state.tabs) && state.tabs.length ? state.tabs : [HOME];
+    const ids = urls.map((url) => {
+      const id = this.nextTabId++;
+      this.tabs.set(id, { id, view: null, title: '', url });
+      return id;
+    });
+    const active = ids[Number.isInteger(state.activeTab) ? state.activeTab : 0] ?? ids[0];
+    this.activateTab(active);
+    const split = state.split;
+    if (split) {
+      const a = ids[split.a];
+      const b = ids[split.b];
+      if (a !== undefined && b !== undefined && a !== b) {
+        this.attachSplit(a, b, split.orientation === 'horizontal' ? 'horizontal' : 'vertical');
+      }
+    }
+    this.updateSidebar();
+    this.persistTabs();
+  }
+
   // ------------------------------------------------------------- command bar
 
   /**
@@ -571,18 +813,22 @@ class Browser {
       return;
     }
     const url = this.activeTab()?.view?.webContents.getURL();
-    const value = mode === 'command' ? ':' : mode === 'search' ? '' : url && url !== HOME ? url : '';
+    const value =
+      mode === 'command' ? ':' : mode === 'search' || mode === 'workspace' ? '' : url && url !== HOME ? url : '';
+    this.barMode = mode;
+    const isCommand = mode === 'command';
+    const preselect = mode === 'workspace';
     this.barHeight = BAR_HEIGHT;
     this.barListOpen = false;
     if (this.barVisible) {
-      this.bar.webContents.send('bar:edit', value, mode === 'command');
+      this.bar.webContents.send('bar:edit', value, isCommand, preselect);
       this.bar.webContents.focus();
       return;
     }
     this.barVisible = true;
     this.win.contentView.addChildView(this.bar);
     this.layout();
-    this.bar.webContents.send('bar:edit', value, mode === 'command');
+    this.bar.webContents.send('bar:edit', value, isCommand, preselect);
     this.bar.webContents.focus();
   }
 
@@ -609,6 +855,16 @@ class Browser {
     } catch {
       return url;
     }
+  }
+
+  /** The open tabs as the palette needs them: title, address, which has focus. */
+  pickerTabs() {
+    return [...this.tabs.values()].map((tab) => ({
+      id: tab.id,
+      title: tab.title || this.titleFor(tab),
+      url: this.urlOf(tab),
+      active: tab.id === this.activeTabId,
+    }));
   }
 
   navigate(raw) {
@@ -679,6 +935,11 @@ class Browser {
       if (url !== HOME) visited.record(url, tab.title);
       if (tab.id === this.activeTabId) this.persistTabs();
     });
+    // Clicking a page is how a split changes which pane the bar and the keys
+    // act on. Outside a split this event has nothing to say.
+    wc.on('focus', () => {
+      if (this.split && tab.id !== this.activeTabId) this.setActivePane(tab.id, { focus: false });
+    });
     this.watchKeys(wc);
   }
 
@@ -717,8 +978,33 @@ class Browser {
   activateTab(id, { focus = true } = {}) {
     const tab = this.tabs.get(id);
     if (!tab || !this.win) return;
+    // A tab already on screen in one of the panes is just a focus move: it
+    // must not be detached and re-added, or the split would collapse.
+    if (this.split && (id === this.split.a || id === this.split.b)) {
+      this.setActivePane(id, { focus });
+      return;
+    }
     const previous = this.activeTab();
+    if (this.split) {
+      // Change the page in the focused pane; the other pane keeps its own.
+      const slot = previous && previous.id === this.split.a ? 'a' : 'b';
+      if (previous && previous.id !== id && previous.view) {
+        this.win.contentView.removeChildView(previous.view);
+      }
+      this.previousTabId = previous?.id ?? null;
+      this.split[slot] = id;
+      this.activeTabId = id;
+      const view = this.tabView(tab);
+      this.win.contentView.addChildView(view, 0);
+      this.layout();
+      if (focus) view.webContents.focus();
+      this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
+      this.updateSidebar();
+      this.persistTabs();
+      return;
+    }
     if (previous && previous.id !== id && previous.view) this.win.contentView.removeChildView(previous.view);
+    this.previousTabId = previous?.id ?? null;
     this.activeTabId = id;
     const view = this.tabView(tab);
     // Bottom of the stack: the sidebar and the chrome draw over the page, so a
@@ -734,12 +1020,30 @@ class Browser {
   closeTab(id) {
     const tab = this.tabs.get(id);
     if (!tab) return;
+    const inSplit = this.split && (id === this.split.a || id === this.split.b);
+    const otherId = inSplit ? (this.split.a === id ? this.split.b : this.split.a) : null;
     this.tabs.delete(id);
     if (tab.view) {
       this.win.contentView.removeChildView(tab.view);
       // A tab whose renderer crashed still has its view, and closing a
       // destroyed webContents throws — which used to stop the close below.
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+    }
+    if (inSplit) {
+      // One pane is left, so the split goes with the tab; the surviving pane
+      // fills the window.
+      this.split = null;
+      this.splitProgress = 1;
+      if (this.activeTabId === id) {
+        this.activeTabId = null;
+        if (otherId !== null && this.tabs.has(otherId)) {
+          this.activateTab(otherId);
+          this.layout();
+          this.persistTabs();
+          return;
+        }
+      }
+      this.layout();
     }
 
     if (this.activeTabId === id) {
@@ -836,6 +1140,29 @@ class Browser {
         this.bar.webContents.send('bar:focus');
         return true;
       }
+    }
+    if (matchesAny(input, keys.workspaces)) {
+      this.showBar('workspace');
+      return true;
+    }
+    if (matchesAny(input, keys.splitVertical)) {
+      this.toggleSplit('vertical');
+      return true;
+    }
+    if (matchesAny(input, keys.splitHorizontal)) {
+      this.toggleSplit('horizontal');
+      return true;
+    }
+    // Alt+H/J/K/L move between the panes, the way they move between tmux
+    // panes in the editor; with no split they belong to the page.
+    if (this.split && keys.focusPane?.length && matchesAny(input, keys.focusPane)) {
+      const key = String(input.key).toLowerCase();
+      const toB = ['l', 'right', 'j', 'down'].includes(key);
+      const toA = ['h', 'left', 'k', 'up'].includes(key);
+      this.setActivePane(
+        toB ? this.split.b : toA ? this.split.a : this.activeTabId === this.split.a ? this.split.b : this.split.a,
+      );
+      return true;
     }
     // Ctrl+1..8 are the tab in that position, Ctrl+9 the last one — the
     // browser convention, not a rebindable accelerator.
@@ -1159,9 +1486,100 @@ function runCommand(window, command) {
       window.hideBar();
       window.openPanel('settings');
       return null;
+    case 'ws':
+    case 'workspaces':
+      return workspaceCommand(window, command.args);
+    case 'tab': {
+      const id = Number(command.args[0]);
+      if (!Number.isInteger(id) || !window.tabs.has(id)) return 'no such tab';
+      window.hideBar();
+      window.activateTab(id);
+      return null;
+    }
+    case 'vsplit':
+      window.hideBar();
+      window.toggleSplit('vertical');
+      return null;
+    case 'split':
+      window.hideBar();
+      window.toggleSplit('horizontal');
+      return null;
+    case 'only':
+      window.hideBar();
+      window.closeSplit();
+      return null;
     default:
       return NOT_A_COMMAND;
   }
+}
+
+/**
+ * `:ws` with no verb is the picker; save keeps the window's tabs under a name
+ * (the page's host when none is given), open swaps them in, delete forgets one.
+ */
+function workspaceCommand(window, args) {
+  const [verb, ...rest] = args;
+  const name = normalizeName(rest.join(' '));
+  switch (String(verb ?? '').toLowerCase()) {
+    case '':
+    case 'list':
+      window.showBar('workspace');
+      return null;
+    case 'save': {
+      const state = window.workspaceState();
+      const chosen =
+        name || autoName(state.tabs, state.activeTab, workspaces.list().map((entry) => entry.name));
+      const entry = workspaces.save(chosen, state);
+      if (!entry) return 'the workspace needs a name';
+      window.workspaceName = entry.name;
+      window.bar.webContents.send(
+        'bar:notice',
+        `saved workspace ${entry.name} · ${entry.tabs.length} tab${entry.tabs.length === 1 ? '' : 's'}`,
+      );
+      return null;
+    }
+    case 'delete': {
+      if (!name) return 'delete which workspace?';
+      if (!workspaces.remove(name)) return `no workspace "${name}"`;
+      if (window.workspaceName?.toLowerCase() === name.toLowerCase()) window.workspaceName = null;
+      window.bar.webContents.send('bar:notice', `deleted workspace ${name}`);
+      return null;
+    }
+    case 'open': {
+      if (!name) {
+        window.showBar('workspace');
+        return null;
+      }
+      const entry = workspaces.get(name);
+      if (!entry) return `no workspace "${name}"`;
+      return switchWorkspace(window, entry);
+    }
+    default:
+      return `unknown workspace command "${verb}"`;
+  }
+}
+
+/**
+ * Switch a window to a saved set of tabs. What it was showing is written back
+ * first — into its own workspace when it has a name, into one rolling slot
+ * otherwise — so Alt+P always has a way back.
+ */
+function switchWorkspace(window, entry) {
+  const state = window.workspaceState();
+  if (window.workspaceName) {
+    workspaces.save(window.workspaceName, state);
+  } else if (entry.name.toLowerCase() !== LAST_WORKSPACE) {
+    workspaces.save(LAST_WORKSPACE, state);
+  }
+  const fresh = workspaces.get(entry.name);
+  if (!fresh) return `no workspace "${entry.name}"`;
+  window.replaceTabs(fresh);
+  window.workspaceName = fresh.name;
+  window.bar.webContents.send(
+    'bar:notice',
+    `workspace ${fresh.name} · ${fresh.tabs.length} tab${fresh.tabs.length === 1 ? '' : 's'}`,
+  );
+  return null;
 }
 
 ipcMain.on('bar:submit', (event, text) => {
@@ -1193,12 +1611,15 @@ ipcMain.on('bar:submit', (event, text) => {
  * gives up the same pixels, so the list never covers the page it is over.
  */
 ipcMain.handle('bar:suggest', (event, text) => {
+  const window = ctxFor(event);
   const items = suggestions(text, {
     history: visited.list(),
     favourites: visited.favourites(),
     searchUrl: config.searchUrl,
+    tabs: window ? window.pickerTabs() : [],
+    workspaces: workspaces ? workspaces.list() : [],
+    mode: window?.barMode,
   });
-  const window = ctxFor(event);
   if (window) {
     window.barListOpen = items.length > 0;
     window.barHeight = BAR_HEIGHT + (items.length ? items.length * BAR_ROW + BAR_PAD : 0);
@@ -1469,6 +1890,7 @@ function startApp() {
     }
     keys = compileKeybindings(config.keybindings);
     visited = new Visits(app.getPath('userData'));
+    workspaces = new Workspaces(app.getPath('userData'));
     startConfigWatch();
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
