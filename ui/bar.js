@@ -109,6 +109,9 @@ function submit(value) {
 }
 
 window.tb.onEdit(focusInput);
+// The bar is already on screen and one of its openers was pressed: put the
+// caret back in the field without touching what it holds.
+window.tb.onFocus(() => input.focus());
 window.tb.onError((message) => setHint(message, { error: true }));
 window.tb.onNotice((message) => setHint(message));
 // Ctrl+J/Ctrl+K are matched in the main process (they are rebindable there),

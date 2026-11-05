@@ -4,23 +4,33 @@
 <meta charset="utf-8">
 <meta name="color-scheme" content="dark light">
 <title>New tab</title>
-<link rel="stylesheet" href="theme.css">
 <style>
   /* The empty tab: the splash neovim shows on a bare buffer -- one Matrix quote
-     picked at random, centered, nothing else. It reads the shared palette, so
-     the page is the chrome's own surface (catppuccin base) and the quote is the
-     blue nvim paints the dashboard header with (SnacksDashboardHeader, which
-     links to Title). */
+     picked at random, centered, nothing else. The colors are the splash's own,
+     not the chrome's: catppuccin mocha's base with the blue nvim paints the
+     dashboard header (SnacksDashboardHeader, which links to Title), and the
+     latte pair when the system asks for light. Kept in this file so a rework of
+     the browser's own theme cannot leave the new tab unpainted. */
+  :root {
+    color-scheme: dark light;
+    --splash-bg: #1e1e2e;
+    --splash-quote: #89b4fa;
+    /* The editor's face at the terminal's size: 12pt, a terminal row tall. */
+    --splash-font: "Fira Code", "JetBrainsMono Nerd Font", "JetBrains Mono",
+      ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --splash-bg: #eff1f5; --splash-quote: #1e66f5; }
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     margin: 0;
     display: grid;
     place-items: center;
-    background: var(--bg);
-    color: var(--accent);
-    /* The editor's face at the terminal's size: 12pt, a terminal row tall. */
-    font: 400 12pt/1.35 var(--font);
+    background: var(--splash-bg);
+    color: var(--splash-quote);
+    font: 400 12pt/1.35 var(--splash-font);
     /* The quote is the splash, not a paragraph: wrapping would break the lines
        the quotes were written to, and a line the window is too narrow for
        overhangs both edges the way it does past the editor's float. */

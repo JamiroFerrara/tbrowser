@@ -23,12 +23,10 @@ const PARTITION = 'persist:tbrowser';
 // white window.
 const HOME = pathToFileURL(path.join(__dirname, 'ui', 'home.html')).href;
 const BLANK = 'about:blank'; // what state files written before the home page hold
-// The chrome's own background: catppuccin's base, the color ui/theme.css
-// paints every panel with — mocha on a dark system, latte on a light one.
-const CHROME_BG = { dark: '#1e1e2e', light: '#eff1f5' };
 // The window and every view behind a page share one background, so the frames
 // between a window appearing and its page painting are the chrome's color
 // instead of white.
+const CHROME_BG = { dark: '#1b1b1b', light: '#f5f5f5' };
 const chromeBg = () => (nativeTheme.shouldUseDarkColors ? CHROME_BG.dark : CHROME_BG.light);
 const PERSIST_DELAY = 250;
 const CASCADE = 32; // pixels a new window steps off the one it opened over
@@ -803,18 +801,25 @@ class Browser {
         return true;
       }
     }
-    if (!this.barVisible) {
-      // Only a handful of openers; the rest of the table is matched without
-      // re-parsing accelerator strings on every keystroke.
-      const index = keys.openBar.findIndex((expected) => matchesAny(input, [expected]));
-      if (index !== -1) {
+    // Only a handful of openers; the rest of the table is matched without
+    // re-parsing accelerator strings on every keystroke.
+    const openerIndex = keys.openBar.findIndex((expected) => matchesAny(input, [expected]));
+    const opener = openerIndex === -1 ? null : config.keybindings.openBar[openerIndex];
+    const search = keys.search?.length > 0 && matchesAny(input, keys.search);
+    if (opener || search) {
+      if (!this.barVisible) {
         // ":" lands in vim's command line; Ctrl+L/Ctrl+K start on the address
         // instead, where a leading ":" turns the input back into a command.
-        this.showBar(config.keybindings.openBar[index] === ':' ? 'command' : 'address');
+        this.showBar(opener === ':' ? 'command' : search ? 'search' : 'address');
         return true;
       }
-      if (keys.search?.length && matchesAny(input, keys.search)) {
-        this.showBar('search');
+      // The bar is already up, so the key brings the caret back to it instead
+      // of opening a second one or wiping what is typed. A bare ":" is text
+      // once the bar holds the keys, so only a modified opener counts here —
+      // otherwise ":" could never be typed into the bar.
+      if (input.control || input.alt || input.meta) {
+        this.bar.webContents.focus();
+        this.bar.webContents.send('bar:focus');
         return true;
       }
     }
