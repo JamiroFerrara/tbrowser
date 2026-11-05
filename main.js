@@ -41,6 +41,9 @@ const NO_UI = process.argv.includes('--no-ui');
 const SCRATCH_PREFIX = 'tbrowser-no-ui-';
 const STALE_PROFILE_MS = 24 * 60 * 60 * 1000;
 const PERSIST_DELAY = 250;
+// A preloaded page kept ready for a while is refreshed when it is taken: the
+// tab shows the page it already has and fetches it again behind the picture.
+const WARM_REFRESH_MS = 5 * 60 * 1000;
 const CASCADE = 32; // pixels a new window steps off the one it opened over
 const START = Date.now();
 const mark = (label) => {
@@ -299,6 +302,89 @@ function takeWarmTab() {
   return null;
 }
 
+/**
+ * Favourites the user keeps loaded (the preload switch in settings, plus the
+ * page's own switch in the settings list). Each one is a real renderer already
+ * showing the page and attached to no window, so opening it takes the view
+ * instead of starting a load: the page is on screen in the frame the tab is.
+ *
+ * Taking one starts a replacement in the background — that is what makes the
+ * second visit just as fast, and what a page that changes (a video site's home)
+ * gets a fresh copy of rather than the one that was left in the pool.
+ */
+const warmPages = new Map(); // url -> { view, url, loadedAt, done, failed }
+
+function desiredWarmUrls() {
+  if (!config?.preload || !visited) return [];
+  return visited
+    .favourites()
+    .filter((fav) => fav.warm && /^https?:/i.test(fav.url))
+    .map((fav) => fav.url);
+}
+
+function startWarmPage(url) {
+  const view = newView(tabPreferences());
+  const wc = view.webContents;
+  // A preloaded page is nobody's tab yet: a link it opens by itself must not
+  // create one behind the user's back.
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const entry = { view, url, loadedAt: 0, done: false, failed: false };
+  wc.once('did-finish-load', () => {
+    entry.loadedAt = Date.now();
+    entry.done = true;
+    mark(`warm ready ${url}`);
+  });
+  wc.once('did-fail-load', (_event, code, description, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    entry.failed = true;
+    mark(`warm failed ${url}: ${description || code}`);
+  });
+  mark(`warm start ${url}`);
+  wc.loadURL(url).catch(() => {
+    entry.failed = true;
+  });
+  warmPages.set(url, entry);
+  return entry;
+}
+
+/**
+ * Make the pool match the user's choice: drop what is no longer a favourite or
+ * no longer switched on, start what is missing. Called at startup, after a
+ * favourite changes and after settings are saved.
+ */
+function syncWarmPages() {
+  if (!config || !visited) return;
+  const want = new Set(desiredWarmUrls());
+  for (const [url, entry] of warmPages) {
+    if (want.has(url)) continue;
+    warmPages.delete(url);
+    mark(`warm drop ${url}`);
+    if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
+  }
+  for (const url of want) {
+    if (!warmPages.has(url)) startWarmPage(url);
+  }
+}
+
+/** A pooled view for this address, or null — the tab then loads normally. */
+function takeWarmPage(url) {
+  const entry = warmPages.get(url);
+  if (!entry) return null;
+  warmPages.delete(url);
+  const wc = entry.view.webContents;
+  if (wc.isDestroyed() || entry.failed) {
+    if (!wc.isDestroyed()) wc.close();
+    mark('warm dropped');
+    setImmediate(syncWarmPages);
+    return null;
+  }
+  mark('warm used');
+  // Replace it off the keystroke, so the next open of this favourite finds a
+  // page ready too.
+  setImmediate(syncWarmPages);
+  return entry;
+}
+
 class Browser {
   constructor(snapshot = {}) {
     this.id = nextWindowId++;
@@ -477,6 +563,9 @@ class Browser {
       if (!this.panel) this.ensurePanel();
       warmChrome();
       warmTab();
+      // The favourites kept ready load last: they are decoration for a later
+      // keystroke, never part of this launch.
+      syncWarmPages();
     });
   }
 
@@ -889,9 +978,66 @@ class Browser {
     const url = parseInput(raw, config.searchUrl);
     const tab = this.activeTab();
     if (!url || !tab) return;
+    // Opening a favourite from the empty tab swaps the splash for the page
+    // that was kept ready: nothing is lost (the tab held no address and no
+    // history), and the page is on screen at once.
+    if (tab.view && tab.url === HOME) {
+      const warm = takeWarmPage(url);
+      if (warm) {
+        this.adoptWarmPage(tab, warm, { attach: true });
+        return;
+      }
+    }
     this.tabView(tab).webContents.loadURL(url).catch((err) => {
       console.warn(`[tbrowser] navigation failed: ${err.message}`);
     });
+  }
+
+  /**
+   * Wire a pooled page to a tab: it is already loaded, so it is a title and an
+   * address to read, not a load to wait on. A page that has sat ready long
+   * enough is fetched again after it is on screen, so a home page that moves is
+   * current rather than the copy the pool happened to hold.
+   */
+  adoptWarmPage(tab, entry, { attach = false } = {}) {
+    const view = entry.view;
+    const wc = view.webContents;
+    const previous = tab.view;
+    tab.view = view;
+    tab.url = wc.getURL() || tab.url || entry.url;
+    track(this, view);
+    this.wireTab(tab);
+    tab.title = wc.getTitle() || tab.title;
+    if (entry.done && Date.now() - entry.loadedAt > WARM_REFRESH_MS) {
+      wc.reload();
+    }
+    visited.record(tab.url, tab.title);
+    if (attach) {
+      if (previous && previous.webContents !== wc && !previous.webContents.isDestroyed()) {
+        this.unwireTab(previous.webContents);
+        if (tab.attached) this.win?.contentView.removeChildView(previous);
+        // The splash the tab was showing goes back to its own pool, as it
+        // does when an empty tab is closed.
+        if (previous.webContents.getURL() === HOME && freeTabs.length === 0) {
+          mark('tab parked');
+          freeTabs.push(previous);
+        } else {
+          previous.webContents.close();
+        }
+      }
+      if (this.win) {
+        this.win.contentView.addChildView(view, 0);
+        tab.attached = true;
+      }
+    }
+    if (tab.id === this.activeTabId) {
+      if (this.win) this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
+      this.layout();
+      this.persistTabs();
+    }
+    this.updateSidebar();
+    mark('tab warm');
+    return view;
   }
 
   go(delta) {
@@ -982,6 +1128,12 @@ class Browser {
   /** Create a tab's renderer on first use; a restored tab costs nothing until then. */
   tabView(tab) {
     if (tab.view) return tab.view;
+    // A favourite kept ready is taken whole: the tab opens on a page that is
+    // already loaded, and the pool starts another one for the next time.
+    if (tab.url && tab.url !== HOME) {
+      const warm = takeWarmPage(tab.url);
+      if (warm) return this.adoptWarmPage(tab, warm);
+    }
     // An empty tab takes the splash that is already loaded and painted; only a
     // tab with an address of its own pays for a renderer.
     const warm = tab.url === HOME ? takeWarmTab() : null;
@@ -1554,6 +1706,8 @@ function runCommand(window, command) {
       const url = tab?.view?.webContents.getURL();
       if (!url || url === HOME) return 'nothing to favourite';
       const added = visited.toggleFavourite(url, tab.title ?? '');
+      // A favourite dropped from the list stops being preloaded with it.
+      syncWarmPages();
       window.bar.webContents.send('bar:notice', added ? '★ added to favourites' : '★ removed from favourites');
       return null;
     }
@@ -1731,7 +1885,15 @@ ipcMain.on('sidebar:action', (event, action) => {
 
 ipcMain.handle('panel:get', (_event, page) => {
   if (page === 'extensions') return extensionsPayload();
-  return { config, configPath, defaults: DEFAULTS, dirs: extensionDirs };
+  return {
+    config,
+    configPath,
+    defaults: DEFAULTS,
+    dirs: extensionDirs,
+    // The settings page lists the favourites so each one can be switched on
+    // for preloading; the flag travels with the entry.
+    favourites: visited.favourites().map((fav) => ({ url: fav.url, title: fav.title, warm: Boolean(fav.warm) })),
+  };
 });
 /**
  * The settings page sends the whole form: three scalars and every keybinding
@@ -1752,6 +1914,9 @@ ipcMain.handle('settings:save', (event, patch) => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+  // The preload switches are the favourites' own: only the rows the form sent
+  // change, so a favourite added in another window keeps the choice it has.
+  for (const [url, warm] of Object.entries(patch.warm ?? {})) visited.setWarm(url, Boolean(warm));
   applyConfig(next, 'panel', event.sender);
   return { ok: true, config };
 });
@@ -2027,6 +2192,8 @@ function applyConfig(next, origin, source) {
   config = next;
   keys = compileKeybindings(config.keybindings);
   syncAdblock().catch((err) => console.warn(`[tbrowser] adblock switch failed: ${err.message}`));
+  // The preload switch and the favourites' own flags decide what stays loaded.
+  syncWarmPages();
   const changed = { config, origin };
   // Every window's settings page reads the same config: the one that saved is
   // already showing it, and the others hear about it.
@@ -2110,6 +2277,13 @@ function useScratchProfile() {
     fs.copyFileSync(path.join(real, 'config.json'), path.join(dir, 'config.json'));
   } catch {
     // no config yet: the defaults loadConfig writes are what a fresh profile gets
+  }
+  // Favourites drive what a test launch preloads, so the run obeys the same
+  // choices the browser does; the copy is thrown away with the profile.
+  try {
+    fs.copyFileSync(path.join(real, 'favourites.json'), path.join(dir, 'favourites.json'));
+  } catch {
+    // no favourites yet
   }
   try {
     fs.symlinkSync(

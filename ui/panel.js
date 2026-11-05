@@ -192,6 +192,16 @@ function textInput(value, hint) {
   return input;
 }
 
+/** One favourite, with the switch that keeps it loaded in the background. */
+function favouriteRow(fav) {
+  const row = el('label', 'fav-row');
+  const box = checkbox(fav.warm === true);
+  box.className = 'warm-box';
+  box.dataset.url = fav.url;
+  row.append(box, el('span', 'fav-name', fav.title || fav.url), el('span', 'fav-url', fav.url));
+  return row;
+}
+
 /** The keybinding rows, with the actions the running config knows first. */
 function keyRows(config, defaults) {
   const known = new Set([...Object.keys(defaults.keybindings ?? {}), ...Object.keys(config.keybindings ?? {})]);
@@ -221,11 +231,15 @@ function setStatus(text, kind) {
 function collect() {
   const keybindings = {};
   for (const input of content.querySelectorAll('.kbd-input')) keybindings[input.dataset.action] = input.value;
+  const warm = {};
+  for (const box of content.querySelectorAll('.warm-box')) warm[box.dataset.url] = box.checked;
   return {
     searchUrl: content.querySelector('#setting-search-url').value,
     adblock: content.querySelector('#setting-adblock').checked,
     resident: content.querySelector('#setting-resident').checked,
+    preload: content.querySelector('#setting-preload').checked,
     keybindings,
+    warm,
   };
 }
 
@@ -242,6 +256,9 @@ function renderSettings(data) {
   adblock.id = 'setting-adblock';
   const resident = checkbox(model.config.resident);
   resident.id = 'setting-resident';
+  const preload = checkbox(model.config.preload);
+  preload.id = 'setting-preload';
+  const favourites = model.favourites ?? [];
 
   const actions = el('div', 'row');
   const save = el('button', 'primary', 'Save');
@@ -281,6 +298,17 @@ function renderSettings(data) {
     group(
       'Startup',
       field(el('span', '', 'Stay running when the last window closes'), resident, 'Keeps the process warm so the next window opens instantly.'),
+    ),
+    group(
+      'Preloaded favourites',
+      field(
+        el('span', '', 'Keep favourite pages ready to open'),
+        preload,
+        'A favourite switched on below stays loaded in the background, so opening it is instant. One left for a while is fetched again when you come back to it.',
+      ),
+      ...(favourites.length
+        ? favourites.map(favouriteRow)
+        : [el('div', 'hint', 'No favourites yet — star a page with :fav, then pick it here.')]),
     ),
     (() => {
       const section = el('section', 'group');
