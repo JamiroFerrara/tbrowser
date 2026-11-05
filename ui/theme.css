@@ -1,0 +1,90 @@
+/* One palette for every piece of chrome tbrowser draws: the command bar, the
+   sidebar, the panel and the new-tab page. It is Catppuccin Mocha, the flavor
+   `:colorscheme catppuccin-mocha` paints the editor with, and Latte when the
+   OS asks for a light theme — the same pair the editor's own theme picks
+   between. The names are catppuccin's, so a color can be traced back to the
+   palette; the semantic aliases below are what each page reads.
+   The face is JetBrains Mono, the font the editor and its terminal run. */
+
+:root {
+  color-scheme: dark light;
+
+  /* Catppuccin Mocha */
+  --ctp-base: #1e1e2e;
+  --ctp-mantle: #181825;
+  --ctp-crust: #11111b;
+  --ctp-surface0: #313244;
+  --ctp-surface1: #45475a;
+  --ctp-surface2: #585b70;
+  --ctp-overlay0: #6c7086;
+  --ctp-overlay1: #7f849c;
+  --ctp-overlay2: #9399b2;
+  --ctp-subtext0: #a6adc8;
+  --ctp-subtext1: #bac2de;
+  --ctp-text: #cdd6f4;
+  --ctp-lavender: #b4befe;
+  --ctp-blue: #89b4fa;
+  --ctp-sapphire: #74c7ec;
+  --ctp-sky: #89dceb;
+  --ctp-teal: #94e2d5;
+  --ctp-green: #a6e3a1;
+  --ctp-yellow: #f9e2af;
+  --ctp-peach: #fab387;
+  --ctp-red: #f38ba8;
+  --ctp-mauve: #cba6f7;
+  --ctp-pink: #f5c2e7;
+
+  /* What a page paints with: the palette above, named by role. */
+  --font: "JetBrainsMono Nerd Font", "JetBrains Mono", "JetBrainsMono Nerd Font Mono",
+    ui-monospace, "Fira Code", "Cascadia Mono", Consolas, monospace;
+  --bg: var(--ctp-base);
+  --bg-deep: var(--ctp-mantle);
+  --bg-deeper: var(--ctp-crust);
+  --fg: var(--ctp-text);
+  --muted: var(--ctp-subtext0);
+  --faint: var(--ctp-overlay1);
+  --line: var(--ctp-surface0);
+  --line-strong: var(--ctp-surface1);
+  --field: var(--ctp-mantle);
+  --field-line: var(--ctp-surface1);
+  --pick: var(--ctp-surface0);
+  --accent: var(--ctp-blue);
+  --accent-2: var(--ctp-mauve);
+  --on-accent: var(--ctp-crust);
+  --danger: var(--ctp-red);
+  --ok: var(--ctp-green);
+  --warn: var(--ctp-yellow);
+
+  scrollbar-color: var(--ctp-surface1) transparent;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    /* Catppuccin Latte */
+    --ctp-base: #eff1f5;
+    --ctp-mantle: #e6e9ef;
+    --ctp-crust: #dce0e8;
+    --ctp-surface0: #ccd0da;
+    --ctp-surface1: #bcc0cc;
+    --ctp-surface2: #acb0be;
+    --ctp-overlay0: #9ca0b0;
+    --ctp-overlay1: #8c8fa1;
+    --ctp-overlay2: #7c7f93;
+    --ctp-subtext0: #6c6f85;
+    --ctp-subtext1: #5c5f77;
+    --ctp-text: #4c4f69;
+    --ctp-lavender: #7287fd;
+    --ctp-blue: #1e66f5;
+    --ctp-sapphire: #209fb5;
+    --ctp-sky: #04a5e5;
+    --ctp-teal: #179299;
+    --ctp-green: #40a02b;
+    --ctp-yellow: #df8e1d;
+    --ctp-peach: #fe640b;
+    --ctp-red: #d20f39;
+    --ctp-mauve: #8839ef;
+    --ctp-pink: #ea76cb;
+
+    --on-accent: #ffffff;
+  }
+}

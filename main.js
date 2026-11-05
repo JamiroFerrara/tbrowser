@@ -23,7 +23,9 @@ const PARTITION = 'persist:tbrowser';
 // white window.
 const HOME = pathToFileURL(path.join(__dirname, 'ui', 'home.html')).href;
 const BLANK = 'about:blank'; // what state files written before the home page hold
-const CHROME_BG = { dark: '#1b1b1b', light: '#f5f5f5' };
+// The chrome's own background: catppuccin's base, the color ui/theme.css
+// paints every panel with — mocha on a dark system, latte on a light one.
+const CHROME_BG = { dark: '#1e1e2e', light: '#eff1f5' };
 // The window and every view behind a page share one background, so the frames
 // between a window appearing and its page painting are the chrome's color
 // instead of white.
@@ -179,9 +181,16 @@ function newView(webPreferences) {
 
 function chromeView(kind, file, preload) {
   const free = freeChrome[kind];
-  if (free.length) {
-    mark(`chrome reused ${kind}`);
-    return free.pop();
+  // A parked view whose renderer died is still a view and still in the pool.
+  // Handing it to a new window makes building that window throw — and that is
+  // the window a show request was waiting for, so the whole app stays dark.
+  while (free.length) {
+    const parked = free.pop();
+    if (parked.view && !parked.view.webContents.isDestroyed()) {
+      mark(`chrome reused ${kind}`);
+      return parked;
+    }
+    mark(`chrome dropped ${kind}`);
   }
   mark(`chrome new ${kind}`);
   const view = newView({
@@ -896,7 +905,15 @@ class Browser {
 // ------------------------------------------------------------------ windows
 
 function createWindow(snapshot = {}) {
-  return new Browser(snapshot).open();
+  const window = new Browser(snapshot);
+  return window.open().catch((err) => {
+    // A window that never finished building has no tabs and half its chrome.
+    // Left in `windows` it answers every later show request with a focus on a
+    // skeleton, so the browser can never be opened again: drop it outright.
+    if (window.win && !window.win.isDestroyed()) window.win.destroy();
+    windows.delete(window);
+    throw err;
+  });
 }
 
 /**
@@ -919,10 +936,20 @@ function startShowRequestWatch() {
   try {
     showRequestWatcher = fs.watch(app.getPath('userData'), (_event, name) => {
       if (name !== 'show.request') return;
+      let request = 'show';
       try {
+        request = fs.readFileSync(file, 'utf8').trim() || 'show';
         fs.unlinkSync(file);
       } catch {
-        // already consumed
+        // the file vanished between the event and the read
+      }
+      if (request === 'new') {
+        openWindow();
+        return;
+      }
+      if (request === 'quit') {
+        app.quit();
+        return;
       }
       showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
     });
@@ -950,13 +977,16 @@ function controlTarget() {
  */
 function quitRunningInstance() {
   const socket = net.createConnection(controlTarget());
-  const finish = () => {
+  const exit = (code) => {
     socket.destroy();
-    process.exit(0);
+    process.exit(code);
   };
-  socket.setTimeout(500, finish);
-  socket.on('error', finish);
-  socket.on('end', finish);
+  // A refused connect means nothing is running, which is what was asked for.
+  // A channel that takes the message but never answers is a process that heard
+  // the request and is not going: say so instead of pretending it closed.
+  socket.setTimeout(500, () => exit(1));
+  socket.on('error', () => exit(0));
+  socket.on('end', () => exit(0));
   socket.on('data', () => {});
   socket.on('connect', () => socket.end('quit\n'));
 }
@@ -978,6 +1008,8 @@ function startControlServer() {
       const request = String(message).trim();
       if (request === 'show') {
         showWindow().catch((err) => console.error(`[tbrowser] reopen failed: ${err.message}`));
+      } else if (request === 'new') {
+        openWindow();
       } else if (request === 'quit') {
         // Answer first: the reply has to leave before the process goes.
         setImmediate(() => app.quit());
