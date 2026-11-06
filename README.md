@@ -312,6 +312,13 @@ key mappings there, so without it every page ran Vimium's defaults and silently
 ignored settings imported from Brave — the fork would look like it had not
 loaded them at all.
 
+Vimium's `H` and `L` ask the browser for the step rather than calling
+`history.go` (`ui/page-preload.js` carries the one event between the page's
+world and the window), because Electron has no back-forward cache: the page's
+own history step reloads. The window keeps the page the tab just left loaded
+beside it, so the step back onto it is a view swap — no load, no network, and
+the same for `Alt+Left` / `Alt+Right`. One page is kept, for the tab on screen.
+
 One collision is left by design: a key bound in `config.json` is taken before
 the page sees it, so a Vimium mapping on the same key never fires. `Ctrl+P` is
 the browser's search key and therefore shadows Vimium's `<c-p>`; rebind either
