@@ -78,7 +78,7 @@ Everything is rebindable in `config.json` (created on first run):
   "blur": true,
   "blurOpacity": 37,
   "blurColor": "#24273a",
-  "blurMaterial": "acrylic",
+  "blurMaterial": "mica",
   "keybindings": {
     "openBar": ["ctrl+l", "ctrl+k", ":"],
     "search": ["ctrl+p"],
