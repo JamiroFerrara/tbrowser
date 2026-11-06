@@ -1141,7 +1141,7 @@ class Browser {
     }
     this.attachPaneEdges();
     this.layout();
-    this.updateSidebar();
+    updateSidebars();
     this.persistTabs();
   }
 
@@ -1189,7 +1189,7 @@ class Browser {
     this.split = null;
     this.detachPaneEdges();
     this.layout();
-    this.updateSidebar();
+    updateSidebars();
     this.persistTabs();
   }
 
@@ -1209,7 +1209,7 @@ class Browser {
     if (focus) view.webContents.focus();
     this.paintPaneEdges();
     this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
-    this.updateSidebar();
+    updateSidebars();
     this.persistTabs();
     this.recordJump();
   }
