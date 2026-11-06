@@ -63,11 +63,13 @@ const getDimension = function (el, direction, amount) {
 };
 
 // Perform a scroll. Return true if we successfully scrolled by any amount, and false otherwise.
-const performScroll = function (element, direction, amount) {
+const performScroll = function (element, direction, amount, behavior) {
   const axisName = scrollProperties[direction].axisName;
   const before = element[axisName];
   if (element.scrollBy) {
-    const scrollArg = { behavior: "instant" };
+    // "smooth" hands the animation to Chromium's compositor; "instant" is the jump. Every caller
+    // that only asks whether an element scrolls passes neither, and must not animate.
+    const scrollArg = { behavior: behavior || "instant" };
     scrollArg[direction === "x" ? "left" : "top"] = amount;
     element.scrollBy(scrollArg);
   } else {
@@ -173,14 +175,9 @@ const checkVisibility = function (element) {
   }
 };
 
-// How scrolling is handled by CoreScroller.
-//   - For jump scrolling, the entire scroll happens immediately.
-//   - For smooth scrolling with distinct key presses, a separate animator is initiated for each key
-//     press. Therefore, several animators may be active at the same time. This ensures that two
-//     quick taps on `j` scroll to the same position as two slower taps.
-//   - For smooth scrolling with keyboard repeat (continuous scrolling), the most recently-activated
-//     animator continues scrolling at least until its keyup event is received. We never initiate a
-//     new animator on keyboard repeat.
+// A smooth scroll is Chromium's own, animated on the compositor thread: it keeps the page's frame
+// rate whatever the page's own scripts are doing. The requestAnimationFrame loop this replaces ran
+// on the page's main thread, and stepped exactly when a heavy page was working.
 
 // CoreScroller contains the core function (scroll) and logic for relative scrolls. All scrolls are
 // ultimately translated to relative scrolls. CoreScroller is not exported.
