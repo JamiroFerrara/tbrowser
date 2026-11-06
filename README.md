@@ -234,15 +234,16 @@ closing one leaves the other filling the window.
 
 ## New tab
 
-An empty tab is the splash the editor shows on a bare buffer: a jolly roger
-drawn in ASCII — Joan G. Stark's line art, 42 columns of `<pre>`, her border
-and initials cut away — over one Matrix quote, picked at random from the same
-list, centered in the window in the editor's face and catppuccin blue.
+An empty tab is the splash the editor shows on a bare buffer: a sword drawn in
+braille patterns — 78 rows of 78 cells, one cell one glyph, so no font can
+shear it — over one Matrix quote, picked at random from the same list,
+centered in the window in the editor's face and catppuccin blue.
 
-The skull flickers the way a CRT frame loses itself for a blink: an opacity
+The drawing flickers the way a CRT frame loses itself for a blink: an opacity
 animation in steps, so a splash left open costs a composited layer and not a
-repaint, and it stops for `prefers-reduced-motion`. It is sized by the window's
-height, so even the smallest window the browser opens still fits all of it.
+repaint, and it stops for `prefers-reduced-motion`. It is sized off the window
+on both axes, so even the smallest window the browser opens still fits all of
+it above the quote.
 
 The bar is up and focused on every launch and every new tab, so the first thing
 you type is a search without reaching for a key first.
