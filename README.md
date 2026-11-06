@@ -320,6 +320,12 @@ own history step reloads. The window keeps the page the tab just left loaded
 beside it, so the step back onto it is a view swap — no load, no network, and
 the same for `Alt+Left` / `Alt+Right`. One page is kept, for the tab on screen.
 
+Scrolling (`j`, `k`, `d`, `u`, `gg`, `G`) is the browser's own smooth scroll:
+the fork asks for `behavior: "smooth"` on every scroll, so Chromium animates it
+on the compositor and a busy page no longer stutters it. A held key retargets
+the animation already running, which is what makes a long scroll continuous
+instead of stepped. Vimium's `smoothScroll` setting still turns the glide off.
+
 One collision is left by design: a key bound in `config.json` is taken before
 the page sees it, so a Vimium mapping on the same key never fires. `Ctrl+P` is
 the browser's search key and therefore shadows Vimium's `<c-p>`; rebind either

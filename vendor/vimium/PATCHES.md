@@ -28,5 +28,12 @@ Local changes only:
    instead of calling `history.go`. Electron has no back-forward cache, so the
    page's own history step reloads; the browser's step shows a view it kept
    loaded.
+6. `content_scripts/scroller.js` — every scroll is asked of the browser as
+   `behavior: "smooth"` instead of being animated by Vimium's own
+   `requestAnimationFrame` loop. Chromium animates it on the compositor, so a
+   page keeps its frame rate while its own scripts are busy; the old loop lost
+   frames exactly there. A repeated key retargets the animation already
+   running, which is what keeps a held `j` continuous. `smoothScroll` in
+   Vimium's settings still chooses between the glide and the instant jump.
 
-To update: copy the new unpacked build over this directory, reapply 1–5.
+To update: copy the new unpacked build over this directory, reapply 1–6.

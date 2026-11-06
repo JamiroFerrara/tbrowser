@@ -259,12 +259,12 @@ class VisualMode extends KeyHandlerMode {
       "W": keyMapping.w,
       "<c-e>": {
         command(count) {
-          return Scroller.scrollBy("y", count * Settings.get("scrollStepSize"), 1, false);
+          return Scroller.scrollBy("y", count * Settings.get("scrollStepSize"));
         },
       },
       "<c-y>": {
         command(count) {
-          return Scroller.scrollBy("y", -count * Settings.get("scrollStepSize"), 1, false);
+          return Scroller.scrollBy("y", -count * Settings.get("scrollStepSize"));
         },
       },
     });
