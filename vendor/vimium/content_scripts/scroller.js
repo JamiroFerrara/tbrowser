@@ -182,16 +182,167 @@ const checkVisibility = function (element) {
 // CoreScroller contains the core function (scroll) and logic for relative scrolls. All scrolls are
 // ultimately translated to relative scrolls. CoreScroller is not exported.
 const CoreScroller = {
+  init() {
+    this.time = 0;
+    this.lastEvent = this.keyDownKey = null;
+    this.installCancelEventListener();
+  },
+
+  // This installs listeners for events which should cancel smooth scrolling.
+  installCancelEventListener() {
+    // NOTE(smblott) With extreme keyboard configurations, Chrome sometimes does not get a keyup
+    // event for every keydown, in which case tapping "j" scrolls indefinitely. This appears to be a
+    // Chrome/OS/XOrg bug of some kind. See #1549.
+    // TODO(philc): I believe some of these returns are unnecessary.
+    return handlerStack.push({
+      _name: "scroller/track-key-status",
+      keydown: (event) => {
+        return handlerStack.alwaysContinueBubbling(() => {
+          this.keyDownKey = event.code;
+          if (!event.repeat) this.time += 1;
+          this.lastEvent = event;
+        });
+      },
+      keyup: (event) => {
+        return handlerStack.alwaysContinueBubbling(() => {
+          if (event.code === this.keyDownKey) {
+            this.keyDownKey = null;
+            this.time += 1;
+          }
+        });
+      },
+      blur: (event) => {
+        return handlerStack.alwaysContinueBubbling(() => {
+          if (event.target === window) this.time += 1;
+        });
+      },
+    });
+  },
+
+  // Return true if CoreScroller would not initiate a new scroll right now.
+  wouldNotInitiateScroll() {
+    return this.lastEvent && this.lastEvent.repeat && Settings.get("smoothScroll");
+  },
+
+  // Calibration fudge factors for continuous scrolling. The calibration value starts at 1.0. We
+  // then increase it (until it exceeds @maxCalibration) if we guess that the scroll is too slow, or
+  // decrease it (until it is less than @minCalibration) if we guess that the scroll is too fast.
+  // The cutoff point for which guess we make is @calibrationBoundary. We require: 0
+  // < @minCalibration <= 1 <= @maxCalibration.
+  // Controls how much we're willing to slow scrolls down; smaller means more slow down.
+  minCalibration: 0.5,
+  // Controls how much we're willing to speed scrolls up; bigger means more speed up.
+  maxCalibration: 1.6,
+  // Boundary between scrolls which are considered too slow, or too fast.
+  calibrationBoundary: 150,
+
   // Scroll element by a relative amount (a number) in some direction.
-  scroll(element, direction, amount) {
+  scroll(element, direction, amount, continuous) {
+    if (continuous == null) continuous = true;
     if (!amount) {
       return;
     }
-    // Jump scrolling is the page's own instant step. Smooth scrolling is asked of the browser,
-    // which animates it on the compositor; a second key press retargets the animation already
-    // running, so quick taps, held keys and page scrolls glide into one another.
-    performScroll(element, direction, amount, Settings.get("smoothScroll") ? "smooth" : "instant");
-    checkVisibility(element);
+
+    if (!Settings.get("smoothScroll")) {
+      // Jump scrolling.
+      performScroll(element, direction, amount);
+      checkVisibility(element);
+      return;
+    }
+
+    // We don't activate new animators on keyboard repeats; rather, the most-recently activated
+    // animator continues scrolling.
+    if (this.lastEvent != null ? this.lastEvent.repeat : undefined) {
+      return;
+    }
+
+    const activationTime = ++this.time;
+    const myKeyIsStillDown = () => (this.time === activationTime) && this.keyDownKey != null;
+
+    // Store amount's sign and make amount positive; the arithmetic is clearer when amount is
+    // positive.
+    const sign = getSign(amount);
+    amount = Math.abs(amount);
+
+    // Initial intended scroll duration (in ms). The glide starts at the speed the plain animation
+    // had, so the key answer is unchanged, and spends the rest of its time easing off: 25 * ln is
+    // that speed stretched over the deceleration below. Capped, because a scroll the eye has to
+    // wait out reads as lag.
+    const duration = Math.min(240, Math.max(130, 25 * Math.log(amount)));
+
+    let totalDelta = 0;
+    let totalElapsed = 0.0;
+    let calibration = 1.0;
+    let previousTimestamp = null;
+    const cancelEventListener = this.installCancelEventListener();
+
+    const animate = (timestamp) => {
+      if (previousTimestamp == null) {
+        // Answer on this frame rather than the next one: the first frame is worth ~16ms of travel,
+        // and waiting for a second frame before moving is what makes a scroll feel late.
+        previousTimestamp = timestamp - 16;
+      }
+      if (timestamp === previousTimestamp) {
+        return requestAnimationFrame(animate);
+      }
+
+      // The elapsed time is typically about 16ms.
+      const elapsed = timestamp - previousTimestamp;
+      totalElapsed += elapsed;
+      previousTimestamp = timestamp;
+
+      // The constants in the duration calculation, above, are chosen to provide reasonable scroll
+      // speeds for distinct keypresses. For continuous scrolls, some scrolls are too slow, and
+      // others too fast. Here, we speed up the slower scrolls, and slow down the faster scrolls.
+      if (
+        myKeyIsStillDown() && (75 <= totalElapsed) &&
+        (this.minCalibration <= calibration && calibration <= this.maxCalibration)
+      ) {
+        // Speed up slow scrolls.
+        if ((1.05 * calibration * amount) < this.calibrationBoundary) {
+          calibration *= 1.05;
+        }
+        // Slow down fast scrolls.
+        if (this.calibrationBoundary < (0.95 * calibration * amount)) {
+          calibration *= 0.95;
+        }
+      }
+
+      // Calculate the initial delta, rounding up to ensure progress. Then, adjust delta to account
+      // for the current scroll state. A tap runs at one speed for the first 60% of its distance and
+      // then decelerates into the destination: the same instant answer the plain jump gave, without
+      // the dead stop at the end. A key held down keeps the steady speed the calibration tunes.
+      let delta;
+      if (myKeyIsStillDown()) {
+        delta = Math.ceil(amount * (elapsed / duration) * calibration);
+      } else {
+        const progress = Math.min(1, totalElapsed / duration);
+        // The integral of "full speed until 60%, then a straight ramp down", normalised so the
+        // whole distance is covered by the end: 1.25 * u early, 1 - 1.5625 * (1 - u)^2 later.
+        const eased = progress < 0.6
+          ? 1.25 * progress
+          : 1 - 1.5625 * (1 - progress) * (1 - progress);
+        delta = Math.max(0, Math.min(Math.ceil(amount * eased) - totalDelta, amount - totalDelta));
+      }
+
+      if (delta && performScroll(element, direction, sign * delta)) {
+        totalDelta += delta;
+        return requestAnimationFrame(animate);
+      } else {
+        // We're done.
+        handlerStack.remove(cancelEventListener);
+        return checkVisibility(element);
+      }
+    };
+
+    // If we've been asked not to be continuous, then we advance time, so the myKeyIsStillDown test
+    // always fails.
+    if (!continuous) {
+      ++this.time;
+    }
+
+    // Start scrolling.
+    requestAnimationFrame(animate);
   },
 };
 
@@ -211,6 +362,7 @@ const Scroller = {
         return activatedElement = path ? path[0] : event.target;
       });
     handlerStack.push(handler);
+    CoreScroller.init();
     this.reset();
   },
 
@@ -221,10 +373,13 @@ const Scroller = {
   // scroll the active element in :direction by :amount * :factor.
   // :factor is needed because :amount can take on string values, which scrollBy converts to element
   // dimensions.
-  scrollBy(direction, amount, factor) {
+  scrollBy(direction, amount, factor, continuous) {
     // if this is called before domReady, just use the window scroll function
     if (factor == null) {
       factor = 1;
+    }
+    if (continuous == null) {
+      continuous = true;
     }
     if (!getScrollingElement() && amount instanceof Number) {
       if (direction === "x") {
@@ -243,9 +398,13 @@ const Scroller = {
       return;
     }
 
-    const element = findScrollableElement(activatedElement, direction, amount, factor);
-    const elementAmount = factor * getDimension(element, direction, amount);
-    return CoreScroller.scroll(element, direction, elementAmount);
+    // Avoid the expensive scroll calculation if it will not be used. This reduces costs during
+    // smooth, continuous scrolls, and is just an optimization.
+    if (!CoreScroller.wouldNotInitiateScroll()) {
+      const element = findScrollableElement(activatedElement, direction, amount, factor);
+      const elementAmount = factor * getDimension(element, direction, amount);
+      return CoreScroller.scroll(element, direction, elementAmount, continuous);
+    }
   },
 
   scrollTo(direction, pos) {
@@ -286,22 +445,22 @@ const Scroller = {
       if (rect.bottom < 0) {
         amount = rect.bottom - Math.min(rect.height, globalThis.innerHeight);
         element = findScrollableElement(element, "y", amount, 1);
-        CoreScroller.scroll(element, "y", amount);
+        CoreScroller.scroll(element, "y", amount, false);
       } else if (globalThis.innerHeight < rect.top) {
         amount = rect.top + Math.min(rect.height - globalThis.innerHeight, 0);
         element = findScrollableElement(element, "y", amount, 1);
-        CoreScroller.scroll(element, "y", amount);
+        CoreScroller.scroll(element, "y", amount, false);
       }
 
       // Scroll x axis.
       if (rect.right < 0) {
         amount = rect.right - Math.min(rect.width, globalThis.innerWidth);
         element = findScrollableElement(element, "x", amount, 1);
-        CoreScroller.scroll(element, "x", amount);
+        CoreScroller.scroll(element, "x", amount, false);
       } else if (globalThis.innerWidth < rect.left) {
         amount = rect.left + Math.min(rect.width - globalThis.innerWidth, 0);
         element = findScrollableElement(element, "x", amount, 1);
-        CoreScroller.scroll(element, "x", amount);
+        CoreScroller.scroll(element, "x", amount, false);
       }
     }
   },
