@@ -152,17 +152,19 @@
   .fav-gap { width: 16px; }
   .session-row {
     display: grid;
-    grid-template-columns: minmax(120px, 1fr) auto auto auto;
-    gap: 2px 8px;
+    grid-template-columns: minmax(120px, 1fr) auto auto auto auto auto auto;
+    gap: 2px 4px;
     align-items: center;
     padding: 7px 0;
     border-top: 1px solid #2a2a2a;
   }
   .session-name { grid-area: 1 / 1; }
   .session-meta { grid-area: 2 / 1 / 3 / -1; font-size: 11.5px; color: #7d7d7d; }
-  .session-open { grid-area: 1 / 2; }
-  .session-rename { grid-area: 1 / 3; }
-  .session-delete { grid-area: 1 / 4; }
+  .session-up { grid-area: 1 / 2; }
+  .session-down { grid-area: 1 / 3; }
+  .session-open { grid-area: 1 / 4; }
+  .session-rename { grid-area: 1 / 5; }
+  .session-delete { grid-area: 1 / 6; }
   .session-new { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
   .session-new input { flex: 1 1 200px; }
   .hint { font-size: 12px; color: #7d7d7d; margin-top: 4px; }

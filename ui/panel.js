@@ -24,7 +24,7 @@ const ACTION_LABELS = {
   nextSuggestion: 'Next suggestion',
   prevSuggestion: 'Previous suggestion',
   toggleSidebar: 'Toggle sidebar',
-  workspaces: 'Workspace picker',
+  workspaces: 'Session picker',
   splitVertical: 'Split side by side',
   splitHorizontal: 'Split stacked',
   focusPane: 'Move between panes',
@@ -384,7 +384,7 @@ async function sessionAction(request) {
   return result;
 }
 
-/** One saved set: its name in a field, what it holds, and what can be done to it. */
+/** One session: its name in a field, what it holds, and what can be done to it. */
 function sessionRow(entry) {
   const row = el('div', 'session-row');
   const name = document.createElement('input');
@@ -395,11 +395,24 @@ function sessionRow(entry) {
   name.setAttribute('aria-label', 'Session name');
 
   const meta = el('div', 'session-meta');
-  meta.textContent = `${entry.tabs} tab${entry.tabs === 1 ? '' : 's'} · saved ${savedLabel(entry.savedAt)}${
-    entry.current ? ' · this window' : ''
-  }`;
+  meta.textContent = [
+    `${entry.tabs} tab${entry.tabs === 1 ? '' : 's'}`,
+    `${entry.attached ?? 0} attached`,
+    entry.saved ? `saved ${savedLabel(entry.savedAt)}` : 'not saved — gone when the browser quits',
+    entry.current ? 'this window' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
-  const open = el('button', 'session-open', 'Open');
+  // Up and down are the jumps: Ctrl+1..Ctrl+9 follow the order here.
+  const up = el('button', 'session-up ghost', '↑');
+  up.title = 'Jump to this session earlier (Ctrl+' + entry.order + ')';
+  up.addEventListener('click', () => sessionAction({ action: 'up', name: entry.name }));
+  const down = el('button', 'session-down ghost', '↓');
+  down.title = 'Jump to this session later';
+  down.addEventListener('click', () => sessionAction({ action: 'down', name: entry.name }));
+
+  const open = el('button', 'session-open', 'Attach');
   open.addEventListener('click', () => sessionAction({ action: 'open', name: entry.name }));
 
   const rename = el('button', 'session-rename', 'Rename');
@@ -414,13 +427,13 @@ function sessionRow(entry) {
     if (event.key === 'Enter') applyName();
   });
 
-  const remove = el('button', 'session-delete ghost', 'Delete');
+  const remove = el('button', 'session-delete ghost', 'Kill');
   remove.addEventListener('click', async () => {
-    const result = await sessionAction({ action: 'delete', name: entry.name });
-    if (result.ok) setStatus(`deleted session "${entry.name}"`, 'ok');
+    const result = await sessionAction({ action: 'kill', name: entry.name });
+    if (result.ok) setStatus(`killed session "${entry.name}"`, 'ok');
   });
 
-  row.append(name, meta, open, rename, remove);
+  row.append(name, meta, up, down, open, rename, remove);
   return row;
 }
 
@@ -430,7 +443,7 @@ function renderSessions() {
   const list = model.sessions ?? [];
   const rows = list.length
     ? list.map(sessionRow)
-    : [el('div', 'hint', 'No saved sessions yet. Name this window below, or save it from the bar with :ws save.')];
+    : [el('div', 'hint', 'No sessions yet. Save this window below, or from the bar with :session save.')];
 
   const fresh = el('div', 'session-new');
   const name = document.createElement('input');
@@ -456,7 +469,7 @@ function renderSessions() {
     el(
       'div',
       'hint',
-      'Sets of tabs kept under a name. Open one to put its tabs in this window, or rename and forget one here; the workspace picker lists the same sets.',
+      'A session is a set of tabs and the windows attached to it: attach this window to one to show its tabs, or kill one to end it. The order here is the order Ctrl+1..Ctrl+9 jump in; the arrows move a session up and down. Alt+P lists the same sessions.',
     ),
     ...rows,
     fresh,

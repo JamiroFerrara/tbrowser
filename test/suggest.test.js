@@ -228,18 +228,20 @@ test('a tab of another window keeps its place in that window', () => {
   assert.equal(rows[1].value, ':tab 9');
 });
 
-test('a workspace picker lists saved sets and a way to save this one', () => {
-  const workspaces = [
-    { name: 'work', tabs: ['https://github.com/', 'https://mail.example.com/'], activeTab: 0 },
-    { name: 'reading', tabs: ['https://news.ycombinator.com/'], activeTab: 0 },
+test('a session picker lists the sessions and a way to save this one', () => {
+  const sessions = [
+    { name: 'work', tabs: 2, attached: 1, saved: true },
+    { name: 'reading', tabs: 1, attached: 0, saved: false },
   ];
-  const rows = suggestions('', { mode: 'workspace', workspaces, searchUrl: SEARCH });
-  assert.equal(rows[0].kind, 'workspace');
-  assert.equal(rows[0].value, ':ws open reading'); // alphabetical when nothing is typed
-  assert.equal(rows[0].subtitle, '1 tab · news.ycombinator.com');
-  assert.equal(rows.at(-1).value, ':ws save');
+  const rows = suggestions('', { mode: 'session', sessions, currentSession: 'work', searchUrl: SEARCH });
+  assert.equal(rows[0].kind, 'session');
+  assert.equal(rows[0].value, ':session open reading'); // alphabetical when nothing is typed
+  assert.equal(rows[0].subtitle, '1 tab · 0 attached · unsaved');
+  assert.equal(rows.at(-1).value, ':session save');
+  const here = rows.find((row) => row.value === ':session open work');
+  assert.equal(here.subtitle, 'current · 2 tabs · 1 attached · saved');
 
-  const filtered = suggestions('work', { mode: 'workspace', workspaces });
+  const filtered = suggestions('work', { mode: 'session', sessions });
   assert.equal(filtered.length, 1);
-  assert.equal(filtered[0].value, ':ws open work');
+  assert.equal(filtered[0].value, ':session open work');
 });

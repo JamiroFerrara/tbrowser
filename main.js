@@ -25,7 +25,7 @@ const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
 const { PreloadPool } = require('./lib/preload');
 const { suggestions } = require('./lib/suggest');
-const { Workspaces, normalizeName, autoName, LAST: LAST_WORKSPACE } = require('./lib/workspaces');
+const { Sessions, normalizeName, autoName } = require('./lib/sessions');
 const { splitBounds, edgeBounds } = require('./lib/layout');
 const { Jumps } = require('./lib/jumps');
 const { sharedTabs } = require('./lib/shared-tabs');
@@ -225,7 +225,10 @@ let ses; // persistent session
 let config;
 let configPath;
 let visited; // visited pages + favourites, ranked by frecency
-let workspaces; // named tab sets, the browser's sessions
+let sessions; // the sessions saved to disk, in their jump order
+// The sessions that exist right now: a window is a client attached to one.
+// They live in memory, and only a saved one outlives the browser.
+const liveSessions = new Map(); // lowercase name -> session
 let keys; // keybindings pre-parsed once
 let extensionDirs = [];
 let disabledExtensions = []; // folders the extensions page switched off, by path
@@ -635,6 +638,9 @@ class Browser {
     this.id = nextWindowId++;
     this.saved = snapshot;
     this.win = null;
+    // The session this window re-joins on restore, when the state file names
+    // one that is still saved.
+    this.sessionName = normalizeName(snapshot.session) || null;
 
     this.tabs = new Map();
     this.activeTabId = null;
@@ -672,7 +678,7 @@ class Browser {
     // The strips framing those panes, lit on the one with the keys; they
     // belong to a window, so a window that goes takes them with it.
     this.paneEdges = null;
-    // The command bar's current shape; the workspace picker is one of them.
+    // The command bar's current shape; the session picker is one of them.
     this.barMode = 'address';
     // The tab a split pairs with, and the tab focus came from.
     this.previousTabId = null;
@@ -682,8 +688,12 @@ class Browser {
     // A jump is being restored: the activation and load it causes are the
     // place the list already holds, not a new one to append.
     this.pendingJump = null;
-    // The named workspace this window is showing, when it came from one.
-    this.workspaceName = null;
+    // The session this window is a client of; its tabs and split live there,
+    // so a second window attached to the same session shows the same ones.
+    this.sessionName = null;
+    // A session state is being applied: this window is following, not leading,
+    // so it must not publish what the other client just told it.
+    this.sessionSyncing = false;
     // The page this window's active tab just left, kept loaded so the step
     // back onto it is a swap (see warmBackStep).
     this.backStep = null;
@@ -733,7 +743,7 @@ class Browser {
     win.on('close', () => {
       this.finalSnapshot = this.snapshot();
       this.persistTabsNow();
-      this.saveWorkspaceOnClose();
+      this.saveSessionOnClose();
       this.detachChrome();
     });
     win.on('closed', () => this.release());
@@ -796,21 +806,33 @@ class Browser {
           // is the empty one, so it opens on the home page.
           .map((url) => (url === BLANK ? HOME : url))
       : [];
+    // A window shows its session, not its own copy of the tabs: a restored
+    // window re-joins the session it was attached to, and a second window on
+    // one already live takes what that session holds right now.
+    const joined = this.sessionName ? (liveSession(this.sessionName) ?? restoreSession(this.sessionName)) : null;
+    if (joined) {
+      this.sessionName = joined.name;
+      joined.clients.add(this);
+    } else {
+      this.sessionName = freshSessionName(savedTabs.length ? savedTabs : [HOME]);
+    }
+    const startState = joined ?? { tabs: savedTabs, activeTab: this.saved.activeTab, split: this.saved.split };
+    const startUrls = Array.isArray(startState.tabs) && startState.tabs.length ? startState.tabs : [HOME];
+    if (!joined) newSession(this.sessionName, { tabs: startUrls, activeTab: startState.activeTab, split: startState.split });
     // A launch builds its tabs without focusing them: the page's focus call
     // lands whenever its renderer finishes, which is after the bar's and took
     // the caret back. The palette is the launch surface, so it is what holds
     // the focus, and it comes up as soon as its own renderer is ready.
-    const startUrls = savedTabs.length ? savedTabs : [HOME];
     startUrls.forEach((url, index) =>
       this.createTab({ url, activate: index === 0, focus: false }),
     );
-    if (typeof this.saved.activeTab === 'number') {
+    if (typeof startState.activeTab === 'number') {
       const ids = [...this.tabs.keys()];
-      if (ids[this.saved.activeTab] !== undefined) {
-        this.activateTab(ids[this.saved.activeTab], { focus: false });
+      if (ids[startState.activeTab] !== undefined) {
+        this.activateTab(ids[startState.activeTab], { focus: false });
       }
     }
-    const savedSplit = this.saved.split;
+    const savedSplit = startState.split;
     if (savedSplit) {
       const ids = [...this.tabs.keys()];
       const a = ids[savedSplit.a];
@@ -819,8 +841,10 @@ class Browser {
         this.attachSplit(a, b, savedSplit.orientation === 'horizontal' ? 'horizontal' : 'vertical');
       }
     }
-    this.workspaceName = normalizeName(this.saved.workspace) || null;
     this.saved = {};
+    // The session now holds what this window opened, so a second client
+    // attaching to it gets the same tabs.
+    publishSession(this);
 
     this.layout();
     updateSidebars();
@@ -893,7 +917,7 @@ class Browser {
     this.split = null;
     this.paneEdges = null;
     this.previousTabId = null;
-    this.workspaceName = null;
+    this.sessionName = null;
     this.barMode = 'address';
     this.bar = undefined;
     this.barEntry = undefined;
@@ -955,13 +979,14 @@ class Browser {
   // ------------------------------------------------------------------- state
 
   snapshot() {
-    const state = this.workspaceState();
+    const state = this.sessionState();
     return {
       bounds: this.win && !this.win.isDestroyed() ? this.win.getBounds() : this.saved.bounds,
       tabs: state.tabs,
       activeTab: state.activeTab,
       split: state.split,
-      workspace: this.workspaceName,
+      session: this.sessionName,
+      saved: Boolean(sessionFor(this)?.saved),
     };
   }
 
@@ -975,8 +1000,8 @@ class Browser {
       : tab.url || HOME;
   }
 
-  /** The window as a workspace: its tabs, the focused one, and any split. */
-  workspaceState() {
+  /** The window as a session: its tabs, the focused one, and any split. */
+  sessionState() {
     const ids = [...this.tabs.keys()];
     return {
       tabs: [...this.tabs.values()].map((tab) => this.urlOf(tab)),
@@ -991,12 +1016,10 @@ class Browser {
     };
   }
 
-  /** Remember the tabs under this window's workspace name, if it has one. */
-  saveWorkspaceOnClose() {
-    if (!this.workspaceName) return;
-    const state = this.workspaceState();
-    if (!state.tabs.length) return;
-    workspaces?.save(this.workspaceName, state);
+  /** Write the window's tabs into the session it is attached to. */
+  saveSessionOnClose() {
+    if (!this.sessionName) return;
+    publishSession(this);
   }
 
   persistTabsNow() {
@@ -1013,7 +1036,56 @@ class Browser {
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
       persistState();
+      // The tabs a window shows are its session's tabs: anything that changes
+      // them goes out to the other windows attached to it.
+      publishSession(this);
     }, PERSIST_DELAY);
+  }
+
+  /**
+   * Follow another client of the same session: open what it has, close what it
+   * does not, and land on the tab it is on. The pages are this window's own —
+   * a renderer cannot be in two windows — so a URL that is already right is
+   * left alone and only the ones that differ load again.
+   */
+  applySessionState(state) {
+    if (this.sessionSyncing || !this.win) return;
+    this.sessionSyncing = true;
+    try {
+      const urls = Array.isArray(state.tabs) ? state.tabs : [];
+      const ids = [...this.tabs.keys()];
+      for (let i = urls.length; i < ids.length; i += 1) this.closeTab(ids[i]);
+      for (let i = 0; i < urls.length; i += 1) {
+        const id = [...this.tabs.keys()][i];
+        if (id === undefined) {
+          this.createTab({ url: urls[i], activate: false, focus: false });
+          continue;
+        }
+        const tab = this.tabs.get(id);
+        if (this.urlOf(tab) !== urls[i]) this.loadInTab(tab, urls[i]);
+      }
+      const active = [...this.tabs.keys()][state.activeTab];
+      if (active !== undefined && active !== this.activeTabId) this.activateTab(active, { focus: false });
+      const panes = [...this.tabs.keys()];
+      const split = state.split;
+      if (split && panes[split.a] !== undefined && panes[split.b] !== undefined && panes[split.a] !== panes[split.b]) {
+        const a = panes[split.a];
+        const b = panes[split.b];
+        if (!this.split || this.split.a !== a || this.split.b !== b || this.split.orientation !== split.orientation) {
+          this.attachSplit(a, b, split.orientation);
+        }
+      } else if (this.split) {
+        this.closeSplit();
+      }
+    } finally {
+      this.sessionSyncing = false;
+    }
+  }
+
+  /** Send one tab to an address the session holds, without touching the rest. */
+  loadInTab(tab, url) {
+    tab.url = url;
+    this.tabView(tab).webContents.loadURL(url).catch(() => {});
   }
 
   // ------------------------------------------------------------------ layout
@@ -1289,10 +1361,10 @@ class Browser {
     }
     const url = this.activeTab()?.view?.webContents.getURL();
     const value =
-      mode === 'command' ? ':' : mode === 'search' || mode === 'workspace' ? '' : url && url !== HOME ? url : '';
+      mode === 'command' ? ':' : mode === 'search' || mode === 'session' ? '' : url && url !== HOME ? url : '';
     this.barMode = mode;
     const isCommand = mode === 'command';
-    const preselect = mode === 'workspace';
+    const preselect = mode === 'session';
     this.barHeight = BAR_HEIGHT;
     this.barListOpen = false;
     if (this.barVisible) {
@@ -1961,7 +2033,7 @@ class Browser {
     this.activateTab(ids[(index + delta + ids.length) % ids.length]);
   }
 
-  /** Ctrl+N: the Nth tab, or — for 9 — the last one, as Chrome does. */
+  /** Alt+N: the Nth tab, or — for 9 — the last one, as Chrome does. */
   selectTabNumber(number) {
     const ids = [...this.tabs.keys()];
     if (!ids.length) return;
@@ -2037,7 +2109,7 @@ class Browser {
       }
     }
     if (matchesAny(input, keys.workspaces)) {
-      this.showBar('workspace');
+      this.showBar('session');
       return true;
     }
     if (matchesAny(input, keys.splitVertical)) {
@@ -2059,10 +2131,14 @@ class Browser {
       );
       return true;
     }
-    // Ctrl+1..8 are the tab in that position, Ctrl+9 the last one — the
-    // browser convention, not a rebindable accelerator.
-    if (input.control && !input.alt && !input.meta && !input.shift && /^[1-9]$/.test(input.key)) {
+    // Alt+1..8 are the tab in that position, Alt+9 the last one; Ctrl+1..9
+    // jump to the session in that place of the order the settings page keeps.
+    if (input.alt && !input.control && !input.meta && !input.shift && /^[1-9]$/.test(input.key)) {
       this.selectTabNumber(Number(input.key));
+      return true;
+    }
+    if (input.control && !input.alt && !input.meta && !input.shift && /^[1-9]$/.test(input.key)) {
+      selectSessionNumber(this, Number(input.key));
       return true;
     }
     if (this.barVisible && matchesAny(input, keys.closeBar)) {
@@ -2217,6 +2293,159 @@ function updateSidebars() {
     if (!window.sidebar || !window.sidebarLoaded) continue;
     window.sidebar.webContents.send('tabs:update', sharedTabRows(window));
   }
+}
+
+// ----------------------------------------------------------------- sessions
+
+const sessionKey = (name) => String(name ?? '').toLowerCase();
+
+/** The live session under that name, or null when nothing holds it. */
+function liveSession(name) {
+  return liveSessions.get(sessionKey(name)) ?? null;
+}
+
+/** A session in memory: the tabs it holds and the windows showing it. */
+function newSession(name, { tabs = [HOME], activeTab = 0, split = null, saved = false } = {}) {
+  const entry = {
+    name,
+    tabs: Array.isArray(tabs) && tabs.length ? tabs : [HOME],
+    activeTab: Number.isInteger(activeTab) ? activeTab : 0,
+    split: split ?? null,
+    saved: Boolean(saved),
+    savedAt: saved ? Date.now() : null,
+    clients: new Set(),
+  };
+  liveSessions.set(sessionKey(name), entry);
+  return entry;
+}
+
+/** Bring a saved session into memory, or null when it is not on disk. */
+function restoreSession(name) {
+  const entry = sessions?.get(name);
+  if (!entry) return null;
+  return newSession(entry.name, { ...entry, saved: true });
+}
+
+/**
+ * Every session that exists: the saved ones in the order they jump, then the
+ * ones this run made that nobody has saved.
+ */
+function sessionList() {
+  const rows = [];
+  const seen = new Set();
+  const add = (entry, saved) => {
+    const live = liveSession(entry.name);
+    rows.push({
+      name: entry.name,
+      tabs: live ? live.tabs.length : entry.tabs.length,
+      attached: live ? live.clients.size : 0,
+      saved: Boolean(saved) || Boolean(live?.saved),
+      live: Boolean(live),
+    });
+    seen.add(sessionKey(entry.name));
+  };
+  for (const entry of sessions?.list() ?? []) add(entry, true);
+  for (const entry of liveSessions.values()) if (!seen.has(sessionKey(entry.name))) add(entry, entry.saved);
+  return rows;
+}
+
+/**
+ * A name nothing is using: the page's host when it has one, otherwise the
+ * lowest free number — tmux names its sessions by number, and an empty tab has
+ * no host to borrow.
+ */
+function freshSessionName(tabs, activeTab = 0) {
+  const taken = sessionList().map((entry) => entry.name);
+  const host = autoName(tabs, activeTab, taken);
+  if (host !== 'session' && !host.startsWith('session ')) return host;
+  for (let n = 0; n < 100; n += 1) {
+    if (!taken.some((name) => name.toLowerCase() === String(n))) return String(n);
+  }
+  return host;
+}
+
+/** The live session a window is attached to, or null. */
+function sessionFor(window) {
+  return window?.sessionName ? liveSession(window.sessionName) : null;
+}
+
+/**
+ * Publish what a window shows into its session, and hand it to the other
+ * windows attached to the same one. A client that is following a change does
+ * not publish it back.
+ */
+function publishSession(window) {
+  const session = sessionFor(window);
+  if (!session || window.sessionSyncing) return;
+  const state = window.sessionState();
+  session.tabs = state.tabs;
+  session.activeTab = state.activeTab;
+  session.split = state.split;
+  session.savedAt = Date.now();
+  if (session.saved) sessions?.save(session.name, state);
+  for (const client of session.clients) {
+    if (client !== window) client.applySessionState(state);
+  }
+  announceSessions();
+}
+
+/** Make a session durable: it comes back on a later launch, in its place. */
+function saveSession(name, state) {
+  if (!sessions) return null;
+  const live = liveSession(name);
+  const entry = sessions.save(live?.name ?? name, state ?? live ?? {});
+  if (!entry) return null;
+  if (live) {
+    live.saved = true;
+    live.name = entry.name;
+    live.savedAt = entry.savedAt;
+  }
+  announceSessions();
+  return entry;
+}
+
+/**
+ * Attach a window to a session: it leaves the one it was showing and takes the
+ * tabs of this one, as `switch-client` does in tmux. A saved session that is
+ * not running is brought back first.
+ */
+function attachToSession(window, name) {
+  const wanted = normalizeName(name);
+  if (!wanted) return 'which session?';
+  const target = liveSession(wanted) ?? restoreSession(wanted);
+  if (!target) return `no session called "${wanted}"`;
+  if (sessionKey(window.sessionName) === sessionKey(target.name)) return null;
+  const previous = sessionFor(window);
+  if (previous) {
+    publishSession(window);
+    previous.clients.delete(window);
+  }
+  window.sessionName = target.name;
+  target.clients.add(window);
+  window.replaceTabs(target);
+  window.persistTabs();
+  announceSessions();
+  return null;
+}
+
+/**
+ * End a session for good: every window attached to it closes, its tabs are
+ * gone and its saved copy is forgotten.
+ */
+function killSession(name) {
+  const target = liveSession(name);
+  const removed = sessions?.remove(name) ?? false;
+  if (!target) {
+    if (removed) announceSessions();
+    return removed;
+  }
+  liveSessions.delete(sessionKey(target.name));
+  for (const client of [...target.clients]) {
+    client.sessionName = null;
+    if (client.win && !client.win.isDestroyed()) client.win.close();
+  }
+  announceSessions();
+  return true;
 }
 
 /** The window holding a tab, or null when no window does. */
@@ -2428,8 +2657,13 @@ function showWindow({ restore = false } = {}) {
 }
 
 function restoreWindows() {
-  const snapshots = readSnapshots();
+  // A session that was never saved does not come back: saving is what makes
+  // one outlive the browser, the way a tmux session outlives its clients.
+  const snapshots = readSnapshots().filter(
+    (snapshot) => snapshot.session && snapshot.saved && sessions?.get(snapshot.session),
+  );
   if (!snapshots.length) return createWindow();
+  // Two windows on one saved session come back as two clients of it.
   return Promise.all(snapshots.map((snapshot) => createWindow(snapshot)));
 }
 
@@ -2477,9 +2711,10 @@ function runCommand(window, command) {
       window.hideBar();
       window.openPanel('settings');
       return null;
+    case 'session':
+    case 'sessions':
     case 'ws':
-    case 'workspaces':
-      return workspaceCommand(window, command.args);
+      return sessionCommand(window, command.args);
     case 'tab': {
       // `:tab <id>` goes to the tab, whichever window holds it; `:tab copy
       // <id>` opens that tab's page here instead of leaving this window.
@@ -2511,77 +2746,62 @@ function runCommand(window, command) {
 }
 
 /**
- * `:ws` with no verb is the picker; save keeps the window's tabs under a name
- * (the page's host when none is given), open swaps them in, delete forgets one.
+ * `:session` with no verb is the picker; save keeps the tabs this window shows
+ * under a name and makes them come back later, open attaches this window to
+ * another session, kill ends one for good.
  */
-function workspaceCommand(window, args) {
+function sessionCommand(window, args) {
   const [verb, ...rest] = args;
   const name = normalizeName(rest.join(' '));
   switch (String(verb ?? '').toLowerCase()) {
     case '':
     case 'list':
-      window.showBar('workspace');
+      window.showBar('session');
       return null;
     case 'save': {
-      const state = window.workspaceState();
-      const chosen =
-        name || autoName(state.tabs, state.activeTab, workspaces.list().map((entry) => entry.name));
-      const entry = workspaces.save(chosen, state);
-      if (!entry) return 'the workspace needs a name';
-      window.workspaceName = entry.name;
+      const state = window.sessionState();
+      const current = sessionFor(window);
+      const chosen = name || current?.name || freshSessionName(state.tabs, state.activeTab);
+      const entry = saveSession(chosen, state);
+      if (!entry) return 'the session needs a name';
+      if (current) current.saved = true;
+      window.sessionName = entry.name;
       window.persistTabs();
       window.bar.webContents.send(
         'bar:notice',
-        `saved workspace ${entry.name} · ${entry.tabs.length} tab${entry.tabs.length === 1 ? '' : 's'}`,
+        `saved session ${entry.name} · ${entry.tabs.length} tab${entry.tabs.length === 1 ? '' : 's'}`,
       );
       return null;
     }
-    case 'delete': {
-      if (!name) return 'delete which workspace?';
-      if (!workspaces.remove(name)) return `no workspace "${name}"`;
-      if (window.workspaceName?.toLowerCase() === name.toLowerCase()) {
-        window.workspaceName = null;
-        window.persistTabs();
-      }
-      window.bar.webContents.send('bar:notice', `deleted workspace ${name}`);
-      return null;
-    }
-    case 'open': {
+    case 'open':
+    case 'attach': {
       if (!name) {
-        window.showBar('workspace');
+        window.showBar('session');
         return null;
       }
-      const entry = workspaces.get(name);
-      if (!entry) return `no workspace "${name}"`;
-      return switchWorkspace(window, entry);
+      const error = attachToSession(window, name);
+      if (error) return error;
+      window.bar.webContents.send('bar:notice', `session ${name}`);
+      return null;
+    }
+    case 'kill': {
+      if (!name) return 'kill which session?';
+      if (!killSession(name)) return `no session called "${name}"`;
+      window.bar?.webContents.send('bar:notice', `killed session ${name}`);
+      return null;
     }
     default:
-      return `unknown workspace command "${verb}"`;
+      return `unknown session command "${verb}"`;
   }
 }
 
-/**
- * Switch a window to a saved set of tabs. What it was showing is written back
- * first — into its own workspace when it has a name, into one rolling slot
- * otherwise — so Alt+P always has a way back.
- */
-function switchWorkspace(window, entry) {
-  const state = window.workspaceState();
-  if (window.workspaceName) {
-    workspaces.save(window.workspaceName, state);
-  } else if (entry.name.toLowerCase() !== LAST_WORKSPACE) {
-    workspaces.save(LAST_WORKSPACE, state);
-  }
-  const fresh = workspaces.get(entry.name);
-  if (!fresh) return `no workspace "${entry.name}"`;
-  window.replaceTabs(fresh);
-  window.workspaceName = fresh.name;
-  window.persistTabs();
-  window.bar.webContents.send(
-    'bar:notice',
-    `workspace ${fresh.name} · ${fresh.tabs.length} tab${fresh.tabs.length === 1 ? '' : 's'}`,
-  );
-  return null;
+/** Ctrl+N: the Nth session in the jump order, attached to this window. */
+function selectSessionNumber(window, number) {
+  const row = sessionList()[number - 1];
+  if (!row) return false;
+  const error = attachToSession(window, row.name);
+  if (!error) window.bar.webContents.send('bar:notice', `session ${row.name}`);
+  return !error;
 }
 
 ipcMain.on('bar:submit', (event, text) => {
@@ -2614,17 +2834,18 @@ ipcMain.on('bar:submit', (event, text) => {
  */
 ipcMain.handle('bar:suggest', (event, text) => {
   const window = ctxFor(event);
-  // A colon in the workspace picker means the user is typing a command, so
-  // the list turns back into the ordinary command list from that character on.
+  // A colon in the session picker means the user is typing a command, so the
+  // list turns back into the ordinary command list from that character on.
   const typedColon = String(text ?? '').trim().startsWith(':');
-  const picker = window?.barMode === 'workspace' && !typedColon;
-  const mode = picker ? 'workspace' : window?.barMode === 'workspace' ? 'address' : window?.barMode;
+  const picker = window?.barMode === 'session' && !typedColon;
+  const mode = picker ? 'session' : window?.barMode === 'session' ? 'address' : window?.barMode;
   const items = suggestions(text, {
     history: visited.list(),
     favourites: visited.favourites(),
     searchUrl: config.searchUrl,
     tabs: window ? window.pickerTabs() : [],
-    workspaces: workspaces ? workspaces.list() : [],
+    sessions: sessionList(),
+    currentSession: window?.sessionName ?? '',
     mode,
   });
   if (window) {
@@ -2739,15 +2960,17 @@ ipcMain.handle('favourites:action', (event, request) => {
   return { ok: true, favourites: favouritesPayload() };
 });
 
-/** The saved sessions as the settings page lists them, and which one this window shows. */
+/**
+ * The sessions as the settings page and the picker list them: every one that
+ * exists, in jump order, with how many windows are attached and whether it
+ * survives a quit.
+ */
 function sessionsPayload(window) {
-  const showing = window?.workspaceName?.toLowerCase() ?? null;
+  const showing = sessionKey(window?.sessionName);
   return {
-    sessions: (workspaces?.list() ?? []).map((entry) => ({
-      name: entry.name,
-      tabs: entry.tabs.length,
-      savedAt: entry.savedAt,
-      current: showing !== null && entry.name.toLowerCase() === showing,
+    sessions: sessionList().map((entry) => ({
+      ...entry,
+      current: showing !== '' && sessionKey(entry.name) === showing,
     })),
   };
 }
@@ -2761,10 +2984,9 @@ function announceSessions() {
 }
 
 /**
- * What the settings page's session rows do. Renaming and forgetting a set also
- * follows it into the windows that are showing it: a window renamed keeps its
- * next save under the new name, and one whose set was deleted stops claiming a
- * name, so it starts a fresh rolling slot instead of resurrecting the entry.
+ * What the settings page's session rows do. Renaming follows the session into
+ * the windows attached to it; killing closes them, which is what killing a
+ * session means; the arrows change the order `Ctrl+1`..`Ctrl+9` jump in.
  */
 ipcMain.handle('sessions:action', (event, request) => {
   const window = ctxFor(event);
@@ -2772,45 +2994,50 @@ ipcMain.handle('sessions:action', (event, request) => {
   const action = String(request?.action ?? '');
   const name = normalizeName(request?.name);
   if (action === 'save') {
-    const state = window.workspaceState();
-    const chosen = name || autoName(state.tabs, state.activeTab, workspaces.list().map((entry) => entry.name));
-    const entry = workspaces.save(chosen, state);
+    const state = window.sessionState();
+    const chosen = name || window.sessionName || freshSessionName(state.tabs, state.activeTab);
+    const entry = saveSession(chosen, state);
     if (!entry) return { ok: false, error: 'the session needs a name' };
-    window.workspaceName = entry.name;
+    window.sessionName = entry.name;
     window.persistTabs();
     announceSessions();
     return { ok: true, ...sessionsPayload(window) };
   }
-  const entry = name ? workspaces.get(name) : null;
-  if (!entry) return { ok: false, error: name ? `no session called "${name}"` : `${action} which session?` };
+  if (!name) return { ok: false, error: `${action} which session?` };
   if (action === 'rename') {
     const next = normalizeName(request?.to);
     if (!next) return { ok: false, error: 'the session needs a name' };
-    const renamed = workspaces.rename(name, next);
-    if (!renamed) return { ok: false, error: `there is already a session called "${next}"` };
-    for (const other of windows) {
-      if (other.workspaceName?.toLowerCase() !== name.toLowerCase()) continue;
-      other.workspaceName = renamed.name;
-      other.persistTabs();
+    const live = liveSession(name);
+    if (live) {
+      // A live session that has never been saved only changes its label; one
+      // that is saved is renamed on disk too, which keeps its place.
+      const saved = sessions?.get(name);
+      if (saved && !sessions.rename(name, next)) {
+        return { ok: false, error: `there is already a session called "${next}"` };
+      }
+      liveSessions.delete(sessionKey(live.name));
+      live.name = next;
+      liveSessions.set(sessionKey(next), live);
+      for (const client of live.clients) client.sessionName = next;
+    } else if (!sessions?.rename(name, next)) {
+      return { ok: false, error: `no session called "${name}", or "${next}" is taken` };
     }
     announceSessions();
     return { ok: true, ...sessionsPayload(window) };
   }
-  if (action === 'delete') {
-    workspaces.remove(name);
-    for (const other of windows) {
-      if (other.workspaceName?.toLowerCase() !== name.toLowerCase()) continue;
-      other.workspaceName = null;
-      other.persistTabs();
-    }
+  if (action === 'kill' || action === 'delete') {
+    if (!killSession(name)) return { ok: false, error: `no session called "${name}"` };
+    announceSessions();
+    return { ok: true, ...sessionsPayload(window) };
+  }
+  if (action === 'up' || action === 'down') {
+    if (!sessions?.get(name)) return { ok: false, error: `save "${name}" before ordering it` };
+    sessions.move(name, action === 'up' ? -1 : 1);
     announceSessions();
     return { ok: true, ...sessionsPayload(window) };
   }
   if (action === 'open') {
-    // Switching writes the window's own tabs back first, so this is the same
-    // way back the picker gives — the panel then goes away and the tabs are
-    // what is left on screen.
-    const failure = switchWorkspace(window, entry);
+    const failure = attachToSession(window, name);
     if (failure) return { ok: false, error: failure };
     window.closePanel();
     announceSessions();
@@ -3267,7 +3494,7 @@ function startApp() {
     }
     keys = compileKeybindings(config.keybindings);
     visited = new Visits(app.getPath('userData'));
-    workspaces = new Workspaces(app.getPath('userData'));
+    sessions = new Sessions(app.getPath('userData'));
     startConfigWatch();
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
@@ -3304,3 +3531,6 @@ app.on('window-all-closed', () => {
   if (NO_UI || !config?.resident) app.quit();
 });
 
+// TEMPORARY verification hook — removed before commit.
+console.log('[hook] env', JSON.stringify(process.env.TBROWSER_SMOKE), process.argv.length);
+if (process.env.TBROWSER_SMOKE) { console.log('[hook] requiring'); require(process.env.TBROWSER_SMOKE); console.log('[hook] required'); }

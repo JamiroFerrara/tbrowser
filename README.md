@@ -49,12 +49,13 @@ platform-specific. WSL users: run these commands from Windows, or package with
 | `Enter` | open what you typed, or the highlighted suggestion |
 | `↑` / `↓`, `Ctrl+J` / `Ctrl+K` | move through the suggestions |
 | `Ctrl+J` / `Ctrl+K` (no list) | next / previous tab |
-| `Ctrl+1` … `Ctrl+8` | go to that tab |
-| `Ctrl+9` | go to the last tab |
+| `Alt+1` … `Alt+8` | go to that tab |
+| `Alt+9` | go to the last tab |
+| `Ctrl+1` … `Ctrl+9` | attach this window to the session in that place of the order |
 | `Ctrl+R`, `F5` | reload |
 | `Alt+Left` / `Alt+Right` | back / forward on this page |
 | `Alt+O` / `Alt+I` | jump back / forward through tabs and pages |
-| `Alt+P` | open the workspace picker |
+| `Alt+P` | open the session picker |
 | `Alt+S` / `Alt+Shift+S` | split side by side / stacked |
 | `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move between the two panes |
 | `F12`, `Ctrl+Shift+I` | DevTools |
@@ -150,10 +151,10 @@ Commands:
 | `:fav` | add or remove the current page from favourites |
 | `:extensions` (`:ext`) | loaded extensions and their settings pages |
 | `:settings` (`:config`) | edit `config.json` |
-| `:ws` | open the workspace picker |
-| `:ws save [name]` | keep this window's tabs under a name (the page's host by default) |
-| `:ws open <name>` | swap this window's tabs for that saved set |
-| `:ws delete <name>` | forget a saved set |
+| `:session` | open the session picker |
+| `:session save [name]` | keep this window's session, so it comes back after a quit |
+| `:session open <name>` | attach this window to that session |
+| `:session kill <name>` | close every window attached to it and forget it |
 | `:tab <id>` | go to a tab of any window by the id the lists show |
 | `:tab copy <id>` | open that tab's page here as a second tab |
 | `:vsplit` / `:split` / `:only` | split side by side / stacked / back to one page |
@@ -163,11 +164,11 @@ a sign-in — opens in a real window so the login can finish.
 
 ## Windows and tabs
 
-Every window is one browser: `Ctrl+N` opens another over the one you are in,
-and a launch that lands on the running instance opens a fresh one. The tabs of
-all of them are one list, the way tmux clients attached to one server share its
-sessions — the window you are in first, then every other window in the order it
-opened, with the window's place named beside its rows.
+Every window is a client of a session (see below), and the tabs of all of them
+are one list: the window you are in first, then every other window in the order
+it opened, with the window's place named beside its rows. A tab keeps its own
+id for the whole browser, so a list built from more than one window can hand
+that id back to `:tab` without asking which window it came from.
 
 - **`Ctrl+E` sidebar** lists every window's tabs under a `this window` /
   `window N` heading. Clicking a row of another window brings that window to
@@ -188,30 +189,41 @@ opened, with the window's place named beside its rows.
   test run keeps a throwaway profile of its own) has its own tabs; sharing
   happens inside one browser at a time.
 
-## Workspaces
+## Sessions
 
-A workspace is a named set of tabs and the one that had focus, saved in
-`workspaces.json` beside `config.json`. It is the browser's answer to a tmux
-session: `Alt+P` lists them, `Enter` switches the window to one, and switching
-back is another `Alt+P`.
+A session is what a tmux session is: a set of tabs and the windows attached to
+it. `Ctrl+N` starts a new one, `Alt+P` lists them, and a window that attaches to
+a session another window is already showing sees the same tabs — add a tab or
+switch it in one and the other follows.
 
-- **Switching keeps what you had.** A window showing a named workspace writes
-  its tabs back into it before switching, so a workspace is never lost by
-  leaving it. A window that was never named puts its tabs in a single rolling
-  `last session` slot, so `Alt+P` always has a way back.
-- **Saving.** `:ws save work` names the current tabs `work`. `:ws save` with no
-  argument names them after the page you are on. Saving an existing name
-  replaces it, and closing a window updates the workspace it was showing.
-- **Managing them.** The settings page (`:settings`) lists every saved set with
-  what it holds and when it was saved. Each row can be opened in this window,
-  renamed in place, or deleted; the field under the list keeps what this window
-  shows now under a new name. A rename or a delete follows the set into the
-  windows showing it, and a name another set already holds is refused.
-- **What is stored.** The tab addresses in order, which tab had focus, and any
+- **A window is a client.** It is attached to exactly one session; its tabs,
+  the focused one and any split belong to that session, not to the window. Two
+  windows on one session show the same tabs, each with its own pages (a page
+  lives in one window at a time), so a link opened on one side is on both.
+- **`Ctrl+1` … `Ctrl+9`** attach this window to the session in that place of the
+  order; **`Alt+1` … `Alt+9`** are the tabs (9 is the last, as in Chrome).
+- **`Alt+P`** is the session finder: every session, how many tabs it holds and
+  how many windows are attached, whether it survives a quit, and `Enter`
+  attaches this window to it. `Ctrl+P` is still the general finder — tabs,
+  history, favourites, commands and the web search.
+- **Saving is what makes a session survive.** A new session is not saved: it
+  lives while the browser does and is gone when the process quits.
+  `:session save work` keeps it in `sessions.json` beside `config.json`, and a
+  later launch re-joins the saved sessions that had windows on them. Saving an
+  existing name replaces its tabs, and a saved session's tabs are written back
+  as you change them.
+- **Killing ends it.** `:session kill <name>` closes every window attached to
+  the session and forgets its saved copy; so does **Kill** in the settings page.
+- **Ordering is harpoon's.** `:settings` lists the sessions with arrows that
+  move one up or down; that order is what `Ctrl+1`..`Ctrl+9` count through, and
+  it is the order the picker shows first.
+- **Renaming and attaching** from the settings page: a rename follows the
+  session into its windows and keeps its place; a name another session holds is
+  refused; **Attach** puts this window on that session.
+- **What is stored.** The tab addresses in order, the focused tab and any
   split. Titles and scroll positions are not stored; the pages load again.
-- **Grouping is open.** A workspace is a flat list, so the same site can appear
-  in two of them and twice in one. Whether a site should instead be allowed in
-  only one place is not decided yet.
+- **Grouping is open.** A session is a flat list, so the same site can appear
+  in two of them and twice in one.
 
 ## Splits
 
@@ -453,7 +465,7 @@ npm start         # run from source (dev)
 Layout:
 
 - `main.js` — windows and their views, key routing, state
-- `lib/` — command parsing, keybinding matcher/config, workspaces, extensions, adblock
+- `lib/` — command parsing, keybinding matcher/config, sessions, extensions, adblock
 - `ui/` — command-bar page + preload
 - `scripts/install-extension.mjs` — CRX/zip unpacker for `extensions/`
 - `vendor/vimium` — patched Vimium fork
