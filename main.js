@@ -75,10 +75,6 @@ const ACCENT_ACRYLIC = 4; // ACCENT_ENABLE_ACRYLICBLURBEHIND
 const WCA_ACCENT_POLICY = 19;
 const GWL_STYLE = -16;
 const WS_THICKFRAME = 0x00040000;
-const SWP_FRAMECHANGED = 0x0020;
-const SWP_NOMOVE = 0x0002;
-const SWP_NOSIZE = 0x0001;
-const SWP_NOZORDER = 0x0004;
 
 /** The window's Win32 handle, from the buffer Electron hands out. */
 function hwndOf(win) {
@@ -129,7 +125,13 @@ function accentCall() {
  * without `WS_THICKFRAME` even when it is resizable, and a tiling manager reads
  * that bit as "cannot be resized" — GlazeWM floats the window instead of tiling
  * it. Put the bit back before the window is shown, which is when the manager
- * first looks at it; nothing else about the frame changes.
+ * first looks at it.
+ *
+ * Only the style bit moves: asking Windows to recalculate the frame
+ * (`SetWindowPos` with `SWP_FRAMECHANGED`) throws away the acrylic brush that
+ * was painted on the window, and the blur only came back when the brush was
+ * painted again. The tiling manager reads the style, not the frame, so the
+ * recalculation buys nothing.
  */
 let frame = null; // the call, or false when koffi cannot be had
 function frameCall() {
@@ -141,16 +143,12 @@ function frameCall() {
     const setStyle = user32.func(
       'intptr_t SetWindowLongPtrW(uintptr_t hwnd, int index, intptr_t value)',
     );
-    const setPos = user32.func(
-      'bool SetWindowPos(uintptr_t hwnd, uintptr_t after, int x, int y, int cx, int cy, uint flags)',
-    );
-    const flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER;
     frame = (win) => {
       const hwnd = hwndOf(win);
       const style = getStyle(hwnd, GWL_STYLE);
       if (style & WS_THICKFRAME) return true;
       setStyle(hwnd, GWL_STYLE, style | WS_THICKFRAME);
-      return setPos(hwnd, 0, 0, 0, 0, 0, flags);
+      return true;
     };
   } catch (err) {
     console.warn(`[tbrowser] the window's frame is unavailable: ${err.message}`);
@@ -465,12 +463,12 @@ function applyBlur() {
 
 /**
  * What each chrome view is painted with. The bar keeps its own strip at the
- * bottom of the window and the sidebar sits beside the page, so both show the
- * window's blur behind them. The settings panel is a whole page laid over the
- * page it covers: a clear surface there would show that page through its text,
- * so it keeps the chrome's colour.
+ * bottom of the window — the page stops above it, so the blur shows through.
+ * The sidebar and the settings panel are laid over the page instead: a clear
+ * surface there would show that page through their text, so both keep the
+ * chrome's colour.
  */
-const chromeBackground = (kind) => (kind === 'panel' ? chromeBg() : surfaceBg());
+const chromeBackground = (kind) => (kind === 'bar' ? surfaceBg() : chromeBg());
 
 /**
  * Keep one spare bar and sidebar ready. The next window takes the pair out of
@@ -3136,6 +3134,26 @@ function startApp() {
     visited = new Visits(app.getPath('userData'));
     workspaces = new Workspaces(app.getPath('userData'));
     startConfigWatch();
+    if (process.env.TBROWSER_TEST_SIDEBAR) {
+      setTimeout(async () => {
+        try {
+          const w = [...windows].pop();
+          if (!w) return;
+          const tab = w.activeTab();
+          if (tab) {
+            await tab.view.webContents
+              .loadURL(
+                'data:text/html,<body style="background:%23ffffff">page</body>',
+              )
+              .catch(() => {});
+          }
+          w.setSidebar(true);
+          w.win.setTitle('tbtest');
+        } catch (err) {
+          console.error(`[tbrowser] sidebar probe: ${err.message}`);
+        }
+      }, 2500);
+    }
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
