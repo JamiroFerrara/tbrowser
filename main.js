@@ -2667,14 +2667,22 @@ function showWindow({ restore = false } = {}) {
 }
 
 function restoreWindows() {
+  const snapshots = readSnapshots();
   // A session that was never saved does not come back: saving is what makes
   // one outlive the browser, the way a tmux session outlives its clients.
-  const snapshots = readSnapshots().filter(
+  const saved = snapshots.filter(
     (snapshot) => snapshot.session && snapshot.saved && sessions?.get(snapshot.session),
   );
-  if (!snapshots.length) return createWindow();
+  // A state file written before sessions have no `saved` on its windows: it
+  // comes back once, as windows of their own, so the change does not eat the
+  // tabs it was holding. Every file written from now on has the flag.
+  const legacy = snapshots.some((snapshot) => !('saved' in snapshot))
+    ? snapshots.filter((snapshot) => !('saved' in snapshot))
+    : [];
+  const chosen = saved.length ? saved : legacy;
+  if (!chosen.length) return createWindow();
   // Two windows on one saved session come back as two clients of it.
-  return Promise.all(snapshots.map((snapshot) => createWindow(snapshot)));
+  return Promise.all(chosen.map((snapshot) => createWindow(snapshot)));
 }
 
 /**
