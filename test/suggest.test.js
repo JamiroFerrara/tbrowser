@@ -95,6 +95,29 @@ test('a favourite outranks a page opened far more often', () => {
   assert.equal(rows[1].kind, 'history');
 });
 
+test('a favourite keeps the name typed in settings over the one the visit recorded', () => {
+  const rows = suggestions(':s named', {
+    history: [{ url: 'https://docs.example.com/', title: 'Docs — the real page title', visits: [NOW] }],
+    favourites: [{ url: 'https://docs.example.com/', title: 'Named by me' }],
+    searchUrl: SEARCH,
+    now: NOW,
+  });
+  assert.equal(rows[0].kind, 'favourite');
+  assert.equal(rows[0].title, 'Named by me');
+  assert.equal(rows[0].value, 'https://docs.example.com/');
+});
+
+test('a favourite with no name keeps the title the visit recorded', () => {
+  const rows = suggestions(':s real', {
+    history: [{ url: 'https://docs.example.com/', title: 'The real title', visits: [NOW] }],
+    favourites: [{ url: 'https://docs.example.com/', title: '' }],
+    searchUrl: SEARCH,
+    now: NOW,
+  });
+  assert.equal(rows[0].kind, 'favourite');
+  assert.equal(rows[0].title, 'The real title');
+});
+
 test('a colon command lists commands, not pages', () => {
   const rows = rowsFor(':sett');
   assert.equal(rows[0].value, ':settings');
