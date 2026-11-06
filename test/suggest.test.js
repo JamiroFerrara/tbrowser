@@ -120,7 +120,7 @@ const openTabs = [
   { id: 2, url: 'https://news.ycombinator.com/', title: 'Hacker News', active: true },
 ];
 
-test('open tabs are the first rows, and their pages are not listed twice', () => {
+test('a favourite comes first, the open tabs under it, and pages twice', () => {
   const rows = suggestions('', {
     history,
     favourites,
@@ -128,21 +128,57 @@ test('open tabs are the first rows, and their pages are not listed twice', () =>
     tabs: openTabs,
     now: NOW,
   });
-  assert.equal(rows[0].kind, 'tab');
-  assert.equal(rows[0].title, 'Hacker News'); // the focused tab comes first
-  assert.equal(rows[0].value, ':tab 2');
+  assert.equal(rows[0].kind, 'favourite');
+  assert.equal(rows[0].value, 'https://old.example.com/');
+  assert.equal(rows[1].kind, 'tab');
+  assert.equal(rows[1].title, 'GitHub'); // opened three times today, so above the tab opened once
   assert.equal(rows[1].value, ':tab 1');
+  assert.equal(rows[2].value, ':tab 2');
   assert.equal(rows.filter((row) => row.kind === 'tab').length, 2);
-  assert.equal(
-    rows.some((row) => row.kind === 'favourite'),
-    true,
-  );
+  // Both pages are open, so neither is offered a second time from history.
+  assert.equal(rows.length, 3);
 
   const typed = suggestions('git', { history, searchUrl: SEARCH, tabs: openTabs, now: NOW });
   assert.equal(typed[0].kind, 'tab');
   assert.equal(typed[0].title, 'GitHub');
   // GitHub is open, so the history entry for it is not offered as a second row.
   assert.equal(typed.filter((row) => row.title === 'GitHub').length, 1);
+});
+
+test('a tab opened all day climbs over a favourite nobody visits', () => {
+  const busyTab = [
+    { id: 1, url: 'https://news.ycombinator.com/', title: 'Hacker News', active: true },
+  ];
+  const everyDay = [{ url: busyTab[0].url, title: 'Hacker News', visits: Array(128).fill(NOW) }];
+  const starred = [{ url: 'https://h.example.com/', title: 'Hacker' }];
+  const rows = suggestions(':s hacker', {
+    history: everyDay,
+    favourites: starred,
+    searchUrl: SEARCH,
+    tabs: busyTab,
+    now: NOW,
+  });
+  assert.equal(rows[0].kind, 'tab');
+  assert.equal(rows[0].value, ':tab 1');
+  assert.equal(rows[1].kind, 'favourite');
+});
+
+test('a rarely opened tab stays under a favourite', () => {
+  const rows = suggestions('', { history, favourites, searchUrl: SEARCH, tabs: openTabs, now: NOW });
+  assert.equal(rows[0].kind, 'favourite');
+});
+
+test('an open tab keeps the visit history of the page it shows', () => {
+  const tabs = [
+    { id: 1, url: 'https://rare.example.com/', title: 'Rare', active: true },
+    { id: 2, url: 'https://daily.example.com/', title: 'Daily', active: false },
+  ];
+  const visits = [
+    { url: 'https://daily.example.com/', title: 'Daily', visits: Array(16).fill(NOW) },
+  ];
+  const rows = suggestions('', { history: visits, searchUrl: SEARCH, tabs, now: NOW });
+  assert.equal(rows[0].title, 'Daily'); // opened all day, though it is not the focused tab
+  assert.equal(rows[1].title, 'Rare');
 });
 
 test('a tab of another window keeps its place in that window', () => {
