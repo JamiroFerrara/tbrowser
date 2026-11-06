@@ -812,13 +812,14 @@ class Browser {
     const joined = this.sessionName ? (liveSession(this.sessionName) ?? restoreSession(this.sessionName)) : null;
     if (joined) {
       this.sessionName = joined.name;
-      joined.clients.add(this);
     } else {
       this.sessionName = freshSessionName(savedTabs.length ? savedTabs : [HOME]);
     }
     const startState = joined ?? { tabs: savedTabs, activeTab: this.saved.activeTab, split: this.saved.split };
     const startUrls = Array.isArray(startState.tabs) && startState.tabs.length ? startState.tabs : [HOME];
     if (!joined) newSession(this.sessionName, { tabs: startUrls, activeTab: startState.activeTab, split: startState.split });
+    // This window is a client of the session from here on.
+    sessionFor(this)?.clients.add(this);
     // A launch builds its tabs without focusing them: the page's focus call
     // lands whenever its renderer finishes, which is after the bar's and took
     // the caret back. The palette is the launch surface, so it is what holds
@@ -1032,13 +1033,14 @@ class Browser {
    * Coalesce the writes instead, and flush synchronously when the window closes.
    */
   persistTabs() {
+    // The tabs a window shows are its session's tabs: anything that changes
+    // them goes out to the other windows attached to it now, so a window
+    // attaching this instant sees them; the disk is written on the timer.
+    publishSession(this);
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
       persistState();
-      // The tabs a window shows are its session's tabs: anything that changes
-      // them goes out to the other windows attached to it.
-      publishSession(this);
     }, PERSIST_DELAY);
   }
 
@@ -2390,15 +2392,23 @@ function publishSession(window) {
 }
 
 /** Make a session durable: it comes back on a later launch, in its place. */
-function saveSession(name, state) {
+function saveSession(name, state, live = liveSession(name)) {
   if (!sessions) return null;
-  const live = liveSession(name);
-  const entry = sessions.save(live?.name ?? name, state ?? live ?? {});
+  const chosen = normalizeName(name) || live?.name;
+  const entry = sessions.save(chosen, state ?? live ?? {});
   if (!entry) return null;
   if (live) {
+    const was = sessionKey(live.name);
+    const now = sessionKey(entry.name);
     live.saved = true;
     live.name = entry.name;
     live.savedAt = entry.savedAt;
+    // A session saved under a new name keeps its windows: they follow it.
+    if (was !== now) {
+      liveSessions.delete(was);
+      liveSessions.set(now, live);
+      for (const client of live.clients) client.sessionName = entry.name;
+    }
   }
   announceSessions();
   return entry;
@@ -2762,9 +2772,8 @@ function sessionCommand(window, args) {
       const state = window.sessionState();
       const current = sessionFor(window);
       const chosen = name || current?.name || freshSessionName(state.tabs, state.activeTab);
-      const entry = saveSession(chosen, state);
+      const entry = saveSession(chosen, state, current);
       if (!entry) return 'the session needs a name';
-      if (current) current.saved = true;
       window.sessionName = entry.name;
       window.persistTabs();
       window.bar.webContents.send(
@@ -2996,7 +3005,7 @@ ipcMain.handle('sessions:action', (event, request) => {
   if (action === 'save') {
     const state = window.sessionState();
     const chosen = name || window.sessionName || freshSessionName(state.tabs, state.activeTab);
-    const entry = saveSession(chosen, state);
+    const entry = saveSession(chosen, state, sessionFor(window));
     if (!entry) return { ok: false, error: 'the session needs a name' };
     window.sessionName = entry.name;
     window.persistTabs();
@@ -3530,7 +3539,3 @@ if (process.argv.includes('--quit')) {
 app.on('window-all-closed', () => {
   if (NO_UI || !config?.resident) app.quit();
 });
-
-// TEMPORARY verification hook — removed before commit.
-console.log('[hook] env', JSON.stringify(process.env.TBROWSER_SMOKE), process.argv.length);
-if (process.env.TBROWSER_SMOKE) { console.log('[hook] requiring'); require(process.env.TBROWSER_SMOKE); console.log('[hook] required'); }
