@@ -128,9 +128,9 @@ it is going to be opened as typed.
 
 Ranking is the frecency shape fff.nvim uses: every visit counts 1, decays with
 a 10-day half-life, stops counting after 30 days, and a page visited very often
-grows only as the square root past ten. Favourites are listed above every
-visited page, however often that page is opened; the star is kept further up
-the list even when its match is weaker.
+grows only as the square root past ten. The match decides, the visits tilt it,
+and a favourite sits above the open tabs and the history — while a page opened
+all day can still climb over a favourite nobody visits.
 
 Visited pages and favourites are `history.json` and `favourites.json` in the
 user-data directory next to `config.json`.
