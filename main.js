@@ -73,6 +73,19 @@ const desktopBlur =
  */
 const ACCENT_ACRYLIC = 4; // ACCENT_ENABLE_ACRYLICBLURBEHIND
 const WCA_ACCENT_POLICY = 19;
+const GWL_STYLE = -16;
+const WS_THICKFRAME = 0x00040000;
+const SWP_FRAMECHANGED = 0x0020;
+const SWP_NOMOVE = 0x0002;
+const SWP_NOSIZE = 0x0001;
+const SWP_NOZORDER = 0x0004;
+
+/** The window's Win32 handle, from the buffer Electron hands out. */
+function hwndOf(win) {
+  const handle = win.getNativeWindowHandle();
+  return handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0));
+}
+
 let accent = null; // undefined until asked for: the call, or false when it cannot be had
 function accentCall() {
   if (accent !== null) return accent;
@@ -102,15 +115,48 @@ function accentCall() {
         nColor: color,
         nAnimationId: 0,
       });
-      const handle = win.getNativeWindowHandle();
-      const hwnd = handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0));
-      return set(hwnd, { nAttribute: WCA_ACCENT_POLICY, pData: buffer, ulDataSize: size });
+      return set(hwndOf(win), { nAttribute: WCA_ACCENT_POLICY, pData: buffer, ulDataSize: size });
     };
   } catch (err) {
     console.warn(`[tbrowser] the window's acrylic is unavailable: ${err.message}`);
     accent = false;
   }
   return accent;
+}
+
+/**
+ * A see-through window is a popup at the Win32 level: Electron builds it
+ * without `WS_THICKFRAME` even when it is resizable, and a tiling manager reads
+ * that bit as "cannot be resized" — GlazeWM floats the window instead of tiling
+ * it. Put the bit back before the window is shown, which is when the manager
+ * first looks at it; nothing else about the frame changes.
+ */
+let frame = null; // the call, or false when koffi cannot be had
+function frameCall() {
+  if (frame !== null) return frame;
+  try {
+    const koffi = require('koffi');
+    const user32 = koffi.load('user32.dll');
+    const getStyle = user32.func('intptr_t GetWindowLongPtrW(uintptr_t hwnd, int index)');
+    const setStyle = user32.func(
+      'intptr_t SetWindowLongPtrW(uintptr_t hwnd, int index, intptr_t value)',
+    );
+    const setPos = user32.func(
+      'bool SetWindowPos(uintptr_t hwnd, uintptr_t after, int x, int y, int cx, int cy, uint flags)',
+    );
+    const flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER;
+    frame = (win) => {
+      const hwnd = hwndOf(win);
+      const style = getStyle(hwnd, GWL_STYLE);
+      if (style & WS_THICKFRAME) return true;
+      setStyle(hwnd, GWL_STYLE, style | WS_THICKFRAME);
+      return setPos(hwnd, 0, 0, 0, 0, 0, flags);
+    };
+  } catch (err) {
+    console.warn(`[tbrowser] the window's frame is unavailable: ${err.message}`);
+    frame = false;
+  }
+  return frame;
 }
 
 /** Whether the desktop is blurred behind the window: the setting, on a Windows that draws it. */
@@ -702,6 +748,11 @@ class Browser {
     // The brush survives the window becoming inactive; re-asserting it when the
     // window comes back is what keeps a theme flip or a material switch honest.
     if (acrylicOn()) {
+      // The see-through window needs its resizable frame bit back before it is
+      // shown, so a tiling manager files it as a tiling window from the first
+      // look instead of floating it.
+      const makeResizable = frameCall();
+      if (makeResizable) makeResizable(win);
       // A see-through window starts with no brush at all: the first paint has
       // to ask for it, and again whenever the window is shown or focused, so
       // the blur is there from the first frame and not a beat later.
