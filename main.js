@@ -176,8 +176,14 @@ const WARM_REFRESH_MS = 5 * 60 * 1000;
 // How many pages a tab keeps behind and ahead of the one on screen when a warm
 // swap skipped past them. Each one is a renderer, so the list is short.
 const MAX_TAB_STEPS = 4;
+// The page a tab just left is loaded again beside it, so the step back onto it
+// is a swap. The load waits this long: a redirect chain, or a link followed
+// straight away, must not pay for a page the next step will not reach.
+const BACK_STEP_DELAY_MS = 400;
 const CASCADE = 32; // pixels a new window steps off the one it opened over
 const START = Date.now();
+// TEMPORARY: flags from a Windows exe launched out of WSL lose the environment.
+if (process.argv.includes('--timing')) process.env.TBROWSER_TIMING = '1';
 const mark = (label) => {
   if (!process.env.TBROWSER_TIMING) return;
   const line = `[tbrowser] ${label} +${Date.now() - START}ms`;
@@ -466,6 +472,10 @@ function tabPreferences() {
     contextIsolation: true,
     nodeIntegration: false,
     spellcheck: false,
+    // The page's one way out of its own world: Vimium's H and L ask for the
+    // browser's step back and forward, which is the one the kept page makes
+    // instant. Every page pays a file read for it, nothing more.
+    preload: path.join(__dirname, 'ui', 'page-preload.js'),
     // Chromium only keeps the compiled form of a script once it has seen the
     // same one twice: the first visit to a heavy site compiles every megabyte
     // of it from source, and so does the second. Asking for the cache on the
@@ -676,6 +686,9 @@ class Browser {
     this.pendingJump = null;
     // The named workspace this window is showing, when it came from one.
     this.workspaceName = null;
+    // The page this window's active tab just left, kept loaded so the step
+    // back onto it is a swap (see warmBackStep).
+    this.backStep = null;
 
     this.persistTimer = null;
     this.finalSnapshot = null;
@@ -877,6 +890,7 @@ class Browser {
     }
     this.tabs.clear();
     this.activeTabId = null;
+    this.dropBackStep();
     clearTimeout(this.persistTimer);
     this.split = null;
     this.paneEdges = null;
@@ -1447,6 +1461,7 @@ class Browser {
 
   /** Close the pages a tab kept for back and forward; the tab is going. */
   closeSteps(tab) {
+    tab.chainView = null;
     if (!tab.steps) return;
     for (const view of [...tab.steps.back, ...tab.steps.forward]) {
       if (!view.webContents.isDestroyed()) view.webContents.close();
@@ -1454,10 +1469,98 @@ class Browser {
     tab.steps = null;
   }
 
+  /**
+   * Keep the page the tab just left loaded beside it, so the step back onto it
+   * is a swap of views rather than a load: the renderer is already up, holding
+   * the page it showed, and nothing on the step touches the network.
+   *
+   * One page is kept for the window, for the tab on screen — the one the step
+   * back is about to reach — and the next departure loads over it, so the cache
+   * costs one renderer and one page, never a pool. The load is deferred: a
+   * redirect chain or a quick second navigation must not pay for a page nobody
+   * will ask for.
+   */
+  warmBackStep(tab, url) {
+    if (tab.id !== this.activeTabId || !URL_RE.test(url ?? '') || url === HOME) return;
+    const entry = (this.backStep ??= { view: null, wc: null, url: null, ready: false, timer: null });
+    if (entry.wc?.isDestroyed()) {
+      entry.view = null;
+      entry.wc = null;
+    }
+    if (!entry.wc) {
+      const view = newView(tabPreferences(), chromeBg());
+      // Nobody's tab yet: a link the kept page opens must not make one.
+      view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      entry.view = view;
+      entry.wc = view.webContents;
+      entry.wc.on('did-finish-load', () => {
+        entry.ready = !entry.wc.isDestroyed() && entry.wc.getURL() === entry.url;
+      });
+      entry.wc.on('did-fail-load', (_event, _code, _description, _url, isMainFrame) => {
+        if (isMainFrame) entry.ready = false;
+      });
+      entry.wc.on('destroyed', () => {
+        if (this.backStep === entry) this.backStep = null;
+      });
+    }
+    entry.tabId = tab.id;
+    entry.url = url;
+    entry.ready = false;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      if (entry.url !== url || entry.wc.isDestroyed()) return;
+      mark('tab step warming');
+      entry.wc.loadURL(url).catch(() => {
+        entry.ready = false;
+      });
+    }, BACK_STEP_DELAY_MS);
+  }
+
+  /** Let the kept page go; the window has no step back for it to make instant. */
+  dropBackStep() {
+    const entry = this.backStep;
+    this.backStep = null;
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    if (entry.wc && !entry.wc.isDestroyed()) entry.wc.close();
+  }
+
+  /** Put a parked view in the tab's place and park the one it replaces. */
+  stepTo(tab, view, delta) {
+    const gone = this.swapTabView(tab, view, { attach: true });
+    if (gone && !gone.webContents.isDestroyed()) {
+      this.parkView(tab, gone, delta < 0 ? 'forward' : 'back');
+    }
+    visited.record(tab.url, tab.title);
+    updateSidebars();
+    this.recordJump();
+    return gone;
+  }
+
   go(delta) {
     const tab = this.activeTab();
     if (!tab?.view) return;
     const history = tab.view.webContents.navigationHistory;
+    const at = history.getActiveIndex();
+    // The page the window just left is still loaded beside the tab, so the step
+    // back onto it is a swap: it is on screen in the frame the key comes in,
+    // with no load behind it. It is only taken when it is the page the tab's own
+    // history would land on, so a step means the same thing either way.
+    const step = this.backStep;
+    if (delta < 0 && at > 0 && step?.ready && step.tabId === tab.id && !step.wc.isDestroyed()) {
+      const target = history.getEntryAtIndex(at - 1);
+      if (target?.url && target.url === step.url) {
+        this.backStep = null;
+        mark('tab step cached');
+        const gone = this.stepTo(tab, step.view, delta);
+        // The view that was swapped out still holds the history the tab had:
+        // the step after this one walks it instead of dying on a page whose own
+        // history is one entry long.
+        if (gone && !gone.webContents.isDestroyed()) tab.chainView = gone;
+        return;
+      }
+    }
     if (delta < 0 && history.canGoBack()) return history.goBack();
     if (delta > 0 && history.canGoForward()) return history.goForward();
     // The renderer has nothing left that way, but a warm swap may have stepped
@@ -1466,21 +1569,43 @@ class Browser {
     const from = delta < 0 ? tab.steps?.back : tab.steps?.forward;
     let view = null;
     while (from?.length) {
-      const step = from.pop();
-      if (!step.webContents.isDestroyed()) {
-        view = step;
+      const parked = from.pop();
+      if (!parked.webContents.isDestroyed()) {
+        view = parked;
         break;
+      }
+    }
+    if (!view) {
+      // A kept page stepped the tab over its own history. That history is still
+      // in the view it replaced, parked as the step the other way: walk it
+      // there, so the second back finds the page the first one skipped.
+      const chain = tab.chainView;
+      if (chain && !chain.webContents.isDestroyed()) {
+        const own = chain.webContents.navigationHistory;
+        const entries = own.getAllEntries();
+        let index = own.getActiveIndex() + delta;
+        // The kept page already put the tab on the entry next door: step past
+        // it, or the step lands on the page that is already on screen.
+        while (index >= 0 && index < entries.length && entries[index].url === tab.url) {
+          index += delta > 0 ? 1 : -1;
+        }
+        if (index >= 0 && index < entries.length) {
+          for (const list of [tab.steps?.back, tab.steps?.forward]) {
+            const held = list?.indexOf(chain) ?? -1;
+            if (held >= 0) list.splice(held, 1);
+          }
+          mark('tab step chain');
+          // Put it on screen first: wiring it is what hears the navigation
+          // that follows, and leaves the tab with its own history again.
+          this.stepTo(tab, chain, delta);
+          own.goToIndex(index);
+          return;
+        }
       }
     }
     if (!view) return;
     mark('tab step');
-    const gone = this.swapTabView(tab, view, { attach: true });
-    if (gone && !gone.webContents.isDestroyed()) {
-      this.parkView(tab, gone, delta < 0 ? 'forward' : 'back');
-    }
-    visited.record(tab.url, tab.title);
-    updateSidebars();
-    this.recordJump();
+    this.stepTo(tab, view, delta);
   }
 
   // ------------------------------------------------------------------ jumps
@@ -1604,13 +1729,19 @@ class Browser {
       updateSidebars();
     });
     wc.on('did-navigate', (_event, url) => {
+      const left = tab.url;
       tab.url = url;
+      // The tab's own history is this view's again from here.
+      tab.chainView = null;
       // The home page is the absence of a page; it is not a visit.
       if (url !== HOME) visited.record(url, tab.title);
       if (tab.id === this.activeTabId) {
         this.persistTabs();
         this.recordJump();
       }
+      // The page the tab just left stays loaded beside it, so the step back
+      // onto it is a swap instead of a load.
+      if (left && left !== url) this.warmBackStep(tab, left);
       // The page the tab left is nobody's now: a favourite among them can be
       // kept ready again. Deferred, so the page that is on screen comes first.
       setImmediate(syncWarmPages);
@@ -1739,6 +1870,8 @@ class Browser {
     const inSplit = this.split && (id === this.split.a || id === this.split.b);
     const otherId = inSplit ? (this.split.a === id ? this.split.b : this.split.a) : null;
     this.tabs.delete(id);
+    // The step back was this tab's: another tab has no history for it.
+    if (this.backStep?.tabId === id) this.dropBackStep();
     this.jumps.forget(id);
     // A favourite that was open is no longer taking its renderer: it can be
     // kept ready again. Deferred, so closing a tab stays a keystroke.
@@ -2477,6 +2610,26 @@ ipcMain.handle('bar:suggest', (event, text) => {
 });
 ipcMain.on('bar:hide', (event) => ctxFor(event)?.hideBar());
 
+/**
+ * A page asking for a step back or forward — Vimium's H and L — taken the way
+ * the window's own back and forward keys take it, so the page kept loaded is
+ * used instead of a reload. A counted step (3H) is Chromium's own history
+ * navigation: one kept page cannot answer for three.
+ */
+ipcMain.on('page:step', (event, delta) => {
+  const window = ctxFor(event);
+  const tab = window?.activeTab();
+  const history = tab?.view?.webContents.navigationHistory;
+  const count = Math.trunc(Number(delta)) || 0;
+  if (!history || !count) return;
+  if (Math.abs(count) === 1) {
+    window.go(count);
+    return;
+  }
+  const index = history.getActiveIndex() + count;
+  if (index >= 0 && index < history.length()) history.goToIndex(index);
+});
+
 ipcMain.on('sidebar:action', (event, action) => {
   const window = ctxFor(event);
   if (!window || !action || typeof action !== 'object') return;
@@ -3093,6 +3246,9 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
+    const navArg = process.argv.find((arg) => arg.startsWith('--nav-test='));
+    const navTest = navArg ? navArg.slice('--nav-test='.length) : null;
+    if (navTest) return showWindow({ restore: true }).then(() => temporaryNavTest(navTest));
     return showWindow({ restore: true });
   });
 }
@@ -3124,3 +3280,57 @@ if (process.argv.includes('--quit')) {
 app.on('window-all-closed', () => {
   if (NO_UI || !config?.resident) app.quit();
 });
+
+// TEMPORARY instrumented check for the back step; removed before commit.
+async function temporaryNavTest(spec) {
+  const [a, b] = spec.split(',');
+  const window = [...windows].pop();
+  const tab = window.activeTab();
+  const wc = tab.view.webContents;
+  const done = (text) => {
+    console.log(`NAVTEST ${text}`);
+    setTimeout(() => app.exit(0), 300);
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const loadAndWait = (url) => {
+    const p = new Promise((r) => wc.once('did-finish-load', r));
+    wc.loadURL(url);
+    return p;
+  };
+  const step = async (delta) => {
+    const at = Date.now();
+    await wc.executeJavaScript(
+      `document.dispatchEvent(new CustomEvent('tbrowser-step', { detail: '${delta}' }))`,
+    );
+    const swapped = Date.now() - at;
+    await wait(300);
+    const now = window.activeTab();
+    console.log(`NAVTEST step ${delta}: ${swapped}ms -> ${now.view.webContents.getURL()} (tab.url ${now.url})`);
+    return now;
+  };
+  try {
+    await loadAndWait(a);
+    await loadAndWait(b);
+    console.log('NAVTEST at b, backStep ready?', window.backStep?.ready, window.backStep?.url);
+    for (let i = 0; i < 12; i++) {
+      await wait(500);
+      const s = window.backStep;
+      const url = s && !s.wc.isDestroyed() ? s.wc.getURL() : 'gone';
+      console.log(`NAVTEST +${(i + 1) * 500}ms ready=${s?.ready} url=${s?.url} showing=${url}`);
+      if (s?.ready) break;
+    }
+    console.log('NAVTEST round 1 (cached back, live forward)');
+    await step(-1);
+    console.log('NAVTEST chainView?', Boolean(window.activeTab().chainView));
+    await step(1);
+    await step(-1);
+    console.log('NAVTEST round 2 (back twice, forward twice)');
+    await step(-1);
+    await step(1);
+    await step(1);
+    done('ok');
+  } catch (err) {
+    console.log(`NAVTEST error ${err.message}`);
+    app.exit(1);
+  }
+}

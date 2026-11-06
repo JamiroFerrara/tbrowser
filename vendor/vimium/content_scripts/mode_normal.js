@@ -133,12 +133,14 @@ const NormalModeCommands = {
     Scroller.scrollBy("x", Settings.get("scrollStepSize") * count);
   },
 
-  // Tab navigation: back, forward.
+  // Tab navigation: back, forward. The browser makes the step, not the page's
+  // own history: it keeps the page just left loaded, so the step back onto it
+  // is a swap of views rather than a reload. See `ui/page-preload.js`.
   goBack(count) {
-    history.go(-count);
+    document.dispatchEvent(new CustomEvent("tbrowser-step", { detail: `${-count}` }));
   },
   goForward(count) {
-    history.go(count);
+    document.dispatchEvent(new CustomEvent("tbrowser-step", { detail: `${count}` }));
   },
 
   // Url manipulation.

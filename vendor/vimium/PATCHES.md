@@ -23,5 +23,10 @@ Local changes only:
    level the background asks for, and Vimium keeps the compiled key mappings
    (and the HUD stylesheet) there, so pages would otherwise run Vimium's
    defaults and ignore the imported settings.
+5. `content_scripts/mode_normal.js` — `goBack`/`goForward` ask the browser for
+   the step (a `tbrowser-step` event, which `ui/page-preload.js` forwards)
+   instead of calling `history.go`. Electron has no back-forward cache, so the
+   page's own history step reloads; the browser's step shows a view it kept
+   loaded.
 
-To update: copy the new unpacked build over this directory, reapply 1–4.
+To update: copy the new unpacked build over this directory, reapply 1–5.
