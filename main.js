@@ -3299,7 +3299,7 @@ async function temporaryNavTest(spec) {
   };
   const step = async (delta) => {
     const at = Date.now();
-    await wc.executeJavaScript(
+    await window.activeTab().view.webContents.executeJavaScript(
       `document.dispatchEvent(new CustomEvent('tbrowser-step', { detail: '${delta}' }))`,
     );
     const swapped = Date.now() - at;
@@ -3321,8 +3321,20 @@ async function temporaryNavTest(spec) {
     }
     console.log('NAVTEST round 1 (cached back, live forward)');
     await step(-1);
-    console.log('NAVTEST chainView?', Boolean(window.activeTab().chainView));
+    {
+      const t = window.activeTab();
+      const h = t.view.webContents.navigationHistory;
+      console.log(
+        'NAVTEST state steps back', t.steps?.back?.length, 'forward', t.steps?.forward?.length,
+        'history', h.getActiveIndex(), '/', h.length(), 'canFwd', h.canGoForward(),
+        'steps.forward urls', (t.steps?.forward ?? []).map((v) => v.webContents.getURL()).join(','),
+      );
+    }
     await step(1);
+    {
+      const t = window.activeTab();
+      console.log('NAVTEST after fwd', t.view.webContents.getURL(), t.url);
+    }
     await step(-1);
     console.log('NAVTEST round 2 (back twice, forward twice)');
     await step(-1);
