@@ -23,6 +23,7 @@ const { DEFAULTS, loadConfig, normalize, compileKeybindings, matchesAny, parseBi
 const { loadExtensions, findExtensions, readDisabledExtensions, writeDisabledExtensions } = require('./lib/extensions');
 const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
+const { frecency } = require('./lib/frecency');
 const { PreloadPool } = require('./lib/preload');
 const { suggestions } = require('./lib/suggest');
 const { Sessions, normalizeName, autoName } = require('./lib/sessions');
@@ -527,8 +528,13 @@ function takeWarmTab() {
  */
 const preloads = new PreloadPool(startWarmPage);
 
+// A resident process with no window has nobody to take a pooled page, but the
+// next launch asks for one at once: the most-used few stay loaded, the rest
+// give their renderers back until a window is open again.
+const WARM_PARKED_KEEP = 3;
+
 function desiredWarmUrls() {
-  if (!config?.preload || !visited || windows.size === 0) return [];
+  if (!config?.preload || !visited) return [];
   const open = new Set();
   for (const window of windows) {
     for (const tab of window.tabs.values()) {
@@ -541,27 +547,38 @@ function desiredWarmUrls() {
       }
     }
   }
-  return visited
+  // The pages used most recently and most often warm first: the first two or
+  // three are ready within seconds of a launch, and those are the ones a
+  // keystroke is likely to ask for. An unvisited favourite sorts by when it was
+  // added, so the order is stable rather than random.
+  const now = Date.now();
+  const scores = new Map(visited.list().map((entry) => [entry.url, frecency(entry.visits, now)]));
+  const warm = visited
     .favourites()
     .filter((fav) => fav.warm && /^(https?|file):/i.test(fav.url) && !open.has(fav.url))
+    .sort((a, b) => (scores.get(b.url) ?? 0) - (scores.get(a.url) ?? 0) || a.added - b.added)
     .map((fav) => fav.url);
+  return windows.size ? warm : warm.slice(0, WARM_PARKED_KEEP);
 }
 
 /**
  * Background page loads — the preloaded favourites and the page kept for the
- * step back — are one queue of one. A load starts only when the pages on
- * screen are idle, and the next one waits for it to finish: nine favourites
- * are not nine renderers and nine downloads racing the page the user asked
- * for, they are work that happens when nothing else needs the machine. A
- * keystroke that takes a pooled page jumps the queue.
+ * step back — are one queue of two. A load starts only when the pages on
+ * screen are idle, and starts are spaced: nine favourites are not nine
+ * renderers and nine downloads racing the page the user asked for, they are
+ * work that happens when nothing else needs the machine. Two at a time is what
+ * makes the most-used ones ready in seconds rather than a minute, without
+ * turning a launch back into a burst. A keystroke that takes a pooled page
+ * jumps the queue.
  */
+const WARM_PARALLEL = 2;
 const WARM_GAP_MS = 600;
 const WARM_IDLE_POLL_MS = 500;
-// A page that keeps fetching (an ad loop, a long poll) must not own the queue:
+// A page that keeps fetching (an ad loop, a long poll) must not own a slot:
 // the next start waits this long at most, then the stuck page loads on its own.
 const WARM_JOB_TIMEOUT_MS = 8_000;
 const warmQueue = [];
-let warmRunning = null;
+const warmActive = new Set();
 let warmPumpTimer = null;
 
 /** Is a page in a window still fetching its main frame? */
@@ -593,25 +610,27 @@ function dropWarm(job) {
   if (at >= 0) warmQueue.splice(at, 1);
 }
 
+function scheduleWarmPump(delay) {
+  if (warmPumpTimer) return;
+  warmPumpTimer = setTimeout(() => {
+    warmPumpTimer = null;
+    pumpWarm();
+  }, delay);
+}
+
 function pumpWarm() {
-  if (warmRunning || !warmQueue.length || !windows.size) return;
+  if (!windows.size || warmPumpTimer) return;
+  if (warmActive.size >= WARM_PARALLEL || !warmQueue.length) return;
   if (foregroundLoading()) {
     // The page the user is waiting on owns the machine; look again when it is
     // done. Nothing polls while it loads, and a page that never finishes keeps
     // the pool idle rather than slow.
-    if (!warmPumpTimer) {
-      warmPumpTimer = setTimeout(() => {
-        warmPumpTimer = null;
-        pumpWarm();
-      }, WARM_IDLE_POLL_MS);
-    }
+    scheduleWarmPump(WARM_IDLE_POLL_MS);
     return;
   }
-  clearTimeout(warmPumpTimer);
-  warmPumpTimer = null;
   const job = warmQueue.shift();
   job.done = true;
-  warmRunning = job;
+  warmActive.add(job);
   let cap = null;
   const full = new Promise((resolve) => {
     cap = setTimeout(resolve, WARM_JOB_TIMEOUT_MS);
@@ -620,12 +639,12 @@ function pumpWarm() {
     .catch(() => {})
     .finally(() => {
       clearTimeout(cap);
-      warmRunning = null;
-      warmPumpTimer = setTimeout(() => {
-        warmPumpTimer = null;
-        pumpWarm();
-      }, WARM_GAP_MS);
+      warmActive.delete(job);
+      scheduleWarmPump(WARM_GAP_MS);
     });
+  // The second start steps off the first: two pages leave together, not as a
+  // burst, and a slot that frees later pulls the next page in.
+  if (warmActive.size < WARM_PARALLEL && warmQueue.length) scheduleWarmPump(WARM_GAP_MS);
 }
 
 function startWarmPage(url) {
@@ -710,6 +729,9 @@ function startWarmPage(url) {
 function syncWarmPages() {
   if (!config || !visited) return;
   preloads.sync(desiredWarmUrls());
+  // Entries that survived a parked process are already queued: opening a window
+  // is what lets them start.
+  pumpWarm();
 }
 
 /** A pooled view for this address, or null — the tab then loads normally. */
