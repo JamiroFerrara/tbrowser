@@ -4,6 +4,10 @@
   "private": true,
   "description": "Minimal Chromium browser: one page, one command bar, real Chrome extensions.",
   "main": "main.js",
+  "author": {
+    "name": "Jamiro Ferrara",
+    "email": "jamiroferrara@users.noreply.github.com"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -11,11 +15,90 @@
     "start": "electron .",
     "test": "node --test",
     "add-ext": "node scripts/install-extension.mjs",
-    "pack:win": "node scripts/fetch-koffi-win.mjs && electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --asar.unpack=\"**/*.node\" --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\" --ignore=\"^/\\.tmp-\""
+    "pack:win": "node scripts/fetch-koffi-win.mjs && electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --asar.unpack=\"**/*.node\" --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\" --ignore=\"^/\\.tmp-\"",
+    "pack:win:installer": "node scripts/fetch-koffi-win.mjs && electron-builder --win",
+    "pack:linux": "electron-builder --linux",
+    "pack:mac": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.jamiroferrara.tbrowser",
+    "productName": "tbrowser",
+    "copyright": "Copyright © 2026 Jamiro Ferrara",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "lib/**/*",
+      "ui/**/*",
+      "vendor/**/*",
+      "scripts/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "vendor/**/*",
+      "**/*.node"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-windows-${arch}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "tbrowser"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Network",
+      "synopsis": "Minimal Chromium browser with Chrome extensions and a vim-style command bar",
+      "maintainer": "Jamiro Ferrara <jamiroferrara@users.noreply.github.com>",
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "artifactName": "${productName}-${version}-macos-${arch}.${ext}"
+    }
   },
   "devDependencies": {
     "@electron/packager": "^18.3.6",
     "electron": "^45.0.0",
+    "electron-builder": "^26.0.12",
     "fflate": "^0.8.2"
   },
   "dependencies": {

@@ -38,6 +38,44 @@ npm run pack:win
 platform-specific. WSL users: run these commands from Windows, or package with
 `npm run pack:win` and launch the `.exe`.
 
+Installers come from electron-builder:
+
+```powershell
+npm run pack:win:installer   # dist/tbrowser-<version>-windows-x64-setup.exe
+npm run pack:linux           # AppImage and .deb
+npm run pack:mac             # x64 and arm64 .dmg
+```
+
+## Releases
+
+Pushing a tag that matches the version in `package.json` builds and publishes
+the installers:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` runs the tests, builds on Windows, Linux and
+macOS runners, and attaches the artifacts to a GitHub release:
+
+| Platform | Artifact |
+| --- | --- |
+| Windows x64 | `tbrowser-<version>-windows-x64-setup.exe` (NSIS) |
+| Linux x64 | `tbrowser-<version>-linux-x86_64.AppImage`, `...-linux-amd64.deb` |
+| macOS x64, arm64 | `tbrowser-<version>-macos-x64.dmg`, `...-macos-arm64.dmg` |
+
+The tag must be `v` followed by the exact `version` in `package.json`; the
+workflow fails before building if they differ. The release job also writes
+`SHA256SUMS.txt`.
+
+Windows installers are unsigned, so SmartScreen warns on first launch. macOS
+builds are ad-hoc signed, which lets them run on Apple Silicon, but they are
+not notarized: Gatekeeper needs a right-click → Open (or
+`xattr -dr com.apple.quarantine /Applications/tbrowser.app`). Full signing
+needs the usual certificates in repository secrets; the workflow does not
+require them.
+
 ## Keys
 
 | Key | Action |
