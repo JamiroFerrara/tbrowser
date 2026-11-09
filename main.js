@@ -593,9 +593,13 @@ function foregroundLoading() {
   return false;
 }
 
-/** Queue a background load; `start` resolves when its page has stopped loading. */
-function queueWarm(start, { front = false } = {}) {
-  const job = { start, done: false };
+/**
+ * Queue a background load; `start` resolves when its page has stopped loading.
+ * An urgent load — the page the step back lands on — may take one slot over the
+ * pool's limit: the pool is decoration, the step is a keystroke away.
+ */
+function queueWarm(start, { front = false, urgent = false } = {}) {
+  const job = { start, done: false, urgent };
   if (front) warmQueue.unshift(job);
   else warmQueue.push(job);
   pumpWarm();
@@ -620,11 +624,16 @@ function scheduleWarmPump(delay) {
 
 function pumpWarm() {
   if (!windows.size || warmPumpTimer) return;
-  if (warmActive.size >= WARM_PARALLEL || !warmQueue.length) return;
-  if (foregroundLoading()) {
-    // The page the user is waiting on owns the machine; look again when it is
-    // done. Nothing polls while it loads, and a page that never finishes keeps
-    // the pool idle rather than slow.
+  const next = warmQueue[0];
+  if (!next) return;
+  const slots = next.urgent ? WARM_PARALLEL + 1 : WARM_PARALLEL;
+  if (warmActive.size >= slots) return;
+  // The page the user is waiting on owns the machine; look again when it is
+  // done. Nothing polls while it loads, and a page that never finishes keeps
+  // the pool idle rather than slow. The page the step back lands on is not the
+  // pool: it is one renderer, and it has to be ready the moment the key falls,
+  // so it leaves after its debounce even while the page on screen finishes.
+  if (!next.urgent && foregroundLoading()) {
     scheduleWarmPump(WARM_IDLE_POLL_MS);
     return;
   }
@@ -1711,8 +1720,12 @@ class Browser {
     clearTimeout(entry.timer);
     // The address this step was warming is not the one the tab left any more:
     // its load is no longer worth a slot in the queue.
+    const aborting = entry.job && warmActive.has(entry.job);
     dropWarm(entry.job);
     entry.job = null;
+    // A load for the address the tab just left two steps ago owns a slot for
+    // a page nobody can ask for any more: stop it instead of waiting it out.
+    if (aborting && entry.wc && !entry.wc.isDestroyed()) entry.wc.stop();
     entry.timer = setTimeout(() => {
       entry.timer = null;
       if (entry.url !== url || entry.wc.isDestroyed()) return;
@@ -1722,7 +1735,7 @@ class Browser {
         () =>
           new Promise((resolve) => {
             if (entry.url !== url || entry.wc.isDestroyed()) return resolve();
-            mark('tab step warming');
+            mark(`tab step warming ${url}`);
             const done = () => {
               entry.wc.removeListener('did-finish-load', done);
               entry.wc.removeListener('did-fail-load', failed);
@@ -1738,7 +1751,7 @@ class Browser {
               done();
             });
           }),
-        { front: true },
+        { front: true, urgent: true },
       );
     }, BACK_STEP_DELAY_MS);
   }
@@ -1773,14 +1786,16 @@ class Browser {
    * so a step means the same thing either way.
    */
   keptPage(tab, delta, url) {
-    if (delta < 0) {
-      const step = this.backStep;
-      if (step?.ready && step.tabId === tab.id && !step.wc.isDestroyed() && step.url === url) {
-        this.backStep = null;
-        // It is on screen again: the tab's own page, with its sound back.
-        step.wc.setAudioMuted(false);
-        return { view: step.view, cached: true };
-      }
+    // The kept page is not "back" or "forward": it is the address the tab just
+    // left. After a step that had to load because the kept page was still
+    // coming, the next step the other way lands exactly on it, and the toggle
+    // becomes a swap instead of reloading both directions from then on.
+    const step = this.backStep;
+    if (step?.ready && step.tabId === tab.id && !step.wc.isDestroyed() && step.url === url) {
+      this.backStep = null;
+      // It is on screen again: the tab's own page, with its sound back.
+      step.wc.setAudioMuted(false);
+      return { view: step.view, cached: true };
     }
     const list = delta < 0 ? tab.steps?.back : tab.steps?.forward;
     for (let i = list?.length ?? 0; i > 0; i--) {
