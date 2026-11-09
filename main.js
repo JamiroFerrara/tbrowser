@@ -547,64 +547,158 @@ function desiredWarmUrls() {
     .map((fav) => fav.url);
 }
 
-// A start every this many milliseconds: several preloaded favourites are one
-// queue, not a burst of renderers competing with the page the user is on.
-const WARM_STAGGER_MS = 600;
-let warmStaggerUntil = 0;
+/**
+ * Background page loads — the preloaded favourites and the page kept for the
+ * step back — are one queue of one. A load starts only when the pages on
+ * screen are idle, and the next one waits for it to finish: nine favourites
+ * are not nine renderers and nine downloads racing the page the user asked
+ * for, they are work that happens when nothing else needs the machine. A
+ * keystroke that takes a pooled page jumps the queue.
+ */
+const WARM_GAP_MS = 600;
+const WARM_IDLE_POLL_MS = 500;
+// A page that keeps fetching (an ad loop, a long poll) must not own the queue:
+// the next start waits this long at most, then the stuck page loads on its own.
+const WARM_JOB_TIMEOUT_MS = 8_000;
+const warmQueue = [];
+let warmRunning = null;
+let warmPumpTimer = null;
+
+/** Is a page in a window still fetching its main frame? */
+function foregroundLoading() {
+  for (const window of windows) {
+    for (const tab of window.tabs.values()) {
+      if (!tab.attached || !tab.view) continue;
+      const wc = tab.view.webContents;
+      if (!wc.isDestroyed() && wc.isLoadingMainFrame()) return true;
+    }
+  }
+  return false;
+}
+
+/** Queue a background load; `start` resolves when its page has stopped loading. */
+function queueWarm(start, { front = false } = {}) {
+  const job = { start, done: false };
+  if (front) warmQueue.unshift(job);
+  else warmQueue.push(job);
+  pumpWarm();
+  return job;
+}
+
+/** Forget a queued load. A running one still finishes; nothing waits on it. */
+function dropWarm(job) {
+  if (!job || job.done) return;
+  job.done = true;
+  const at = warmQueue.indexOf(job);
+  if (at >= 0) warmQueue.splice(at, 1);
+}
+
+function pumpWarm() {
+  if (warmRunning || !warmQueue.length || !windows.size) return;
+  if (foregroundLoading()) {
+    // The page the user is waiting on owns the machine; look again when it is
+    // done. Nothing polls while it loads, and a page that never finishes keeps
+    // the pool idle rather than slow.
+    if (!warmPumpTimer) {
+      warmPumpTimer = setTimeout(() => {
+        warmPumpTimer = null;
+        pumpWarm();
+      }, WARM_IDLE_POLL_MS);
+    }
+    return;
+  }
+  clearTimeout(warmPumpTimer);
+  warmPumpTimer = null;
+  const job = warmQueue.shift();
+  job.done = true;
+  warmRunning = job;
+  let cap = null;
+  const full = new Promise((resolve) => {
+    cap = setTimeout(resolve, WARM_JOB_TIMEOUT_MS);
+  });
+  Promise.race([Promise.resolve().then(job.start), full])
+    .catch(() => {})
+    .finally(() => {
+      clearTimeout(cap);
+      warmRunning = null;
+      warmPumpTimer = setTimeout(() => {
+        warmPumpTimer = null;
+        pumpWarm();
+      }, WARM_GAP_MS);
+    });
+}
 
 function startWarmPage(url) {
-  const view = newView(tabPreferences());
-  const wc = view.webContents;
-  // A preloaded page is nobody's tab yet: a link it opens by itself must not
-  // create one behind the user's back.
-  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  let view = null;
+  let wc = null;
+  let settle = null;
+  const settleWarm = () => {
+    const done = settle;
+    settle = null;
+    if (done) done();
+  };
   const entry = {
-    view,
+    view: null,
+    wc: null,
     url,
     loadedAt: 0,
     done: false,
     failed: false,
     started: false,
-    timer: null,
+    closed: false,
+    job: null,
+    // The renderer is made when the page's turn comes, not when the pool is
+    // filled: an idle pool holding nine pages is not nine renderers.
     load() {
-      if (entry.started) return;
+      if (entry.started || entry.closed) return Promise.resolve();
       entry.started = true;
-      entry.timer = null;
-      if (wc.isDestroyed()) {
-        entry.failed = true;
-        return;
+      if (!view) {
+        view = newView(tabPreferences());
+        wc = view.webContents;
+        entry.view = view;
+        entry.wc = wc;
+        // A preloaded page is nobody's tab yet: a link it opens by itself must
+        // not create one behind the user's back.
+        wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+        wc.once('did-finish-load', () => {
+          entry.loadedAt = Date.now();
+          entry.done = true;
+          mark(`warm ready ${url}`);
+          settleWarm();
+        });
+        wc.once('did-fail-load', (_event, code, description, _validatedURL, isMainFrame) => {
+          if (!isMainFrame) return;
+          entry.failed = true;
+          mark(`warm failed ${url}: ${description || code}`);
+          settleWarm();
+        });
+        wc.once('destroyed', settleWarm);
       }
       mark(`warm start ${url}`);
-      wc.loadURL(url).catch(() => {
-        entry.failed = true;
+      return new Promise((resolve) => {
+        settle = resolve;
+        wc.loadURL(url).catch(() => {
+          entry.failed = true;
+          settleWarm();
+        });
       });
     },
     // A tab takes this page before its turn came: load it now, on the keystroke.
     activate() {
-      clearTimeout(entry.timer);
+      dropWarm(entry.job);
+      entry.job = null;
       entry.load();
     },
     close() {
-      clearTimeout(entry.timer);
-      entry.timer = null;
+      entry.closed = true;
+      dropWarm(entry.job);
+      entry.job = null;
       mark(`warm drop ${url}`);
-      if (!wc.isDestroyed()) wc.close();
+      if (wc && !wc.isDestroyed()) wc.close();
+      settleWarm();
     },
   };
-  wc.once('did-finish-load', () => {
-    entry.loadedAt = Date.now();
-    entry.done = true;
-    mark(`warm ready ${url}`);
-  });
-  wc.once('did-fail-load', (_event, code, description, _validatedURL, isMainFrame) => {
-    if (!isMainFrame) return;
-    entry.failed = true;
-    mark(`warm failed ${url}: ${description || code}`);
-  });
-  const now = Date.now();
-  const delay = Math.max(0, warmStaggerUntil - now);
-  warmStaggerUntil = Math.max(now, warmStaggerUntil) + WARM_STAGGER_MS;
-  entry.timer = setTimeout(entry.load, delay);
+  entry.job = queueWarm(() => entry.load());
   return entry;
 }
 
@@ -850,9 +944,10 @@ class Browser {
     this.layout();
     updateSidebars();
     mark('page created');
-    // The favourites kept ready load now, beside the bar: they are decoration
-    // for a later keystroke, so nothing this launch shows waits on them, and
-    // they do not wait on the bar's renderer either.
+    // The favourites kept ready are queued now, but they do not start until
+    // this window's pages are done loading: they are decoration for a later
+    // keystroke, and a launch that races them against the page the user asked
+    // for is a launch that stalls the page.
     setImmediate(() => {
       if (this.win) syncWarmPages();
     });
@@ -1554,7 +1649,14 @@ class Browser {
    */
   warmBackStep(tab, url) {
     if (tab.id !== this.activeTabId || !URL_RE.test(url ?? '') || url === HOME) return;
-    const entry = (this.backStep ??= { view: null, wc: null, url: null, ready: false, timer: null });
+    const entry = (this.backStep ??= {
+      view: null,
+      wc: null,
+      url: null,
+      ready: false,
+      timer: null,
+      job: null,
+    });
     if (entry.wc?.isDestroyed()) {
       entry.view = null;
       entry.wc = null;
@@ -1585,13 +1687,37 @@ class Browser {
     entry.url = url;
     entry.ready = false;
     clearTimeout(entry.timer);
+    // The address this step was warming is not the one the tab left any more:
+    // its load is no longer worth a slot in the queue.
+    dropWarm(entry.job);
+    entry.job = null;
     entry.timer = setTimeout(() => {
       entry.timer = null;
       if (entry.url !== url || entry.wc.isDestroyed()) return;
-      mark('tab step warming');
-      entry.wc.loadURL(url).catch(() => {
-        entry.ready = false;
-      });
+      // Behind the page on screen, ahead of the pool: a step back is a
+      // keystroke away, a preloaded favourite is decoration.
+      entry.job = queueWarm(
+        () =>
+          new Promise((resolve) => {
+            if (entry.url !== url || entry.wc.isDestroyed()) return resolve();
+            mark('tab step warming');
+            const done = () => {
+              entry.wc.removeListener('did-finish-load', done);
+              entry.wc.removeListener('did-fail-load', failed);
+              resolve();
+            };
+            const failed = (_event, _code, _description, _url, isMainFrame) => {
+              if (isMainFrame) done();
+            };
+            entry.wc.once('did-finish-load', done);
+            entry.wc.once('did-fail-load', failed);
+            entry.wc.loadURL(url).catch(() => {
+              entry.ready = false;
+              done();
+            });
+          }),
+        { front: true },
+      );
     }, BACK_STEP_DELAY_MS);
   }
 
@@ -1601,6 +1727,8 @@ class Browser {
     this.backStep = null;
     if (!entry) return;
     clearTimeout(entry.timer);
+    dropWarm(entry.job);
+    entry.job = null;
     if (entry.wc && !entry.wc.isDestroyed()) entry.wc.close();
   }
 
