@@ -1537,7 +1537,12 @@ class Browser {
     this.panePlacement = null;
     this.detachPaneEdges();
     for (const id of before) if (!this.inPane(id)) this.detachTabView(this.tabs.get(id));
-    if (next && !this.inPane(this.activeTabId)) this.activeTabId = paneTabs(next)[0];
+    if (next) {
+      if (!this.inPane(this.activeTabId)) this.activeTabId = paneTabs(next)[0];
+    } else {
+      // No arrangement left: the focused tab is the whole window again.
+      this.attachTabView(this.tabs.get(this.activeTabId));
+    }
     this.layout();
     updateSidebars();
     this.persistTabs();
@@ -2470,7 +2475,7 @@ class Browser {
       return true;
     }
     // Ctrl+Shift+W is `:bd`: the tab itself goes, and its pane with it.
-    if (matchesAny(input, keys.closeTab)) {
+    if (matchesAny(input, keys.killTab)) {
       if (this.activeTab()) this.closeTab(this.activeTabId);
       return true;
     }

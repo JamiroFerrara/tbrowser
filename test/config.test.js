@@ -49,6 +49,22 @@ test('normalize keeps defaults and rejects bad bindings', () => {
   assert.equal(config.searchUrl, 'https://www.google.com/search?q=');
 });
 
+test('a binding from the older browser cannot take a key the new one uses', () => {
+  // The file written before panes and buffers were separate things bound C-w
+  // to closing the tab and C-S-w to closing the window. Those actions are
+  // gone, so their keys are the new build's again.
+  const config = normalize({
+    keybindings: {
+      closeTab: ['ctrl+w'],
+      openBar: ['ctrl+p'],
+    },
+  });
+  assert.equal('closeTab' in config.keybindings, false);
+  assert.deepEqual(config.keybindings.closePane, ['ctrl+w']);
+  assert.deepEqual(config.keybindings.killTab, ['ctrl+shift+w']);
+  assert.deepEqual(config.keybindings.openBar, ['ctrl+p']);
+});
+
 test('normalize accepts a custom search url', () => {
   assert.equal(normalize({ searchUrl: 'https://kagi.com/search?q=' }).searchUrl, 'https://kagi.com/search?q=');
   assert.equal(normalize({ searchUrl: 42 }).searchUrl, 'https://www.google.com/search?q=');

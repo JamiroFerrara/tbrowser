@@ -18,7 +18,7 @@ const ACTION_LABELS = {
   jumpBack: 'Jump back (last tab or page)',
   jumpForward: 'Jump forward',
   newTab: 'New tab',
-  closeTab: 'Kill tab',
+  killTab: 'Kill tab',
   closePane: 'Close pane (tab stays)',
   nextTab: 'Next tab',
   prevTab: 'Previous tab',

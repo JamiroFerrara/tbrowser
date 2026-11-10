@@ -136,7 +136,7 @@ Everything is rebindable in `config.json` (created on first run):
     "focusPane": ["alt+h", "alt+j", "alt+k", "alt+l"],
     "settings": ["ctrl+,"],
     "closePane": ["ctrl+w"],
-    "closeTab": ["ctrl+shift+w"],
+    "killTab": ["ctrl+shift+w"],
     "devtools": ["f12", "ctrl+shift+i"],
     "newWindow": ["ctrl+n"],
     "closeWindow": [],
