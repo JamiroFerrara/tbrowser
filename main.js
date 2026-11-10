@@ -493,6 +493,16 @@ function warmChrome() {
  */
 const freeTabs = [];
 
+/**
+ * Buffers whose window closed. A tab is a buffer: closing the window that
+ * showed it is not killing it, so its page stays here — a renderer still
+ * loaded, holding everything it had — until a search or a click takes it back
+ * onto a screen, or the browser quits. The oldest go first, and a page that
+ * came back out of the pool is taken out of it, so nothing is in two lists.
+ */
+const parkedBuffers = new Map(); // tab id -> { id, view, title, url, session }
+const PARKED_MAX = 16;
+
 function tabPreferences() {
   return {
     partition: PARTITION,
@@ -1065,12 +1075,12 @@ class Browser {
   }
 
   release() {
-    // The window is already gone here, and its tab views went with it: closing
-    // a destroyed webContents throws, which would abort this handler and leave
-    // a dead Browser in `windows` for every later show request to focus.
+    // The window is going; its tabs are not. Each page is kept as a buffer, so
+    // the address that was open here is still open — one search away, already
+    // loaded — after the window that showed it is gone. A tab whose renderer
+    // crashed has nothing to keep and is dropped.
     for (const tab of this.tabs.values()) {
-      const contents = tab.view?.webContents;
-      if (contents && !contents.isDestroyed()) contents.close();
+      if (tab.view && !tab.view.webContents.isDestroyed()) parkBuffer(this, tab);
       this.closeSteps(tab);
     }
     this.tabs.clear();
@@ -1388,23 +1398,15 @@ class Browser {
 
   /**
    * Alt+S / Alt+Shift+S, `:vsplit` / `:split`: divide the pane the keys are
-   * in. The new pane shows the tab focus came from, so a split puts the tab
-   * you left beside the tab you are in, as `:sp` does; a window holding one
-   * tab opens a second page to give it company.
+   * in. The new pane is an empty buffer, the way `:new` opens one: a split is
+   * a place to type the next address into, never a second copy of a page that
+   * is already on screen.
    */
   splitPane(orientation) {
     if (!this.win) return;
     const active = this.activeTab();
     if (!active) return;
-    const shown = this.shownTabs();
-    let partner =
-      this.previousTabId != null && this.previousTabId !== active.id && !shown.includes(this.previousTabId)
-        ? this.tabs.get(this.previousTabId)
-        : null;
-    if (!partner) {
-      partner = [...this.tabs.values()].find((tab) => tab.id !== active.id && !shown.includes(tab.id)) ?? null;
-    }
-    if (!partner) partner = this.createTab({ activate: false });
+    const partner = this.createTab({ activate: false });
     this.panes = splitAt(this.panes, active.id, partner.id, orientation);
     this.attachTabView(this.tabs.get(active.id));
     this.attachTabView(partner);
@@ -1414,6 +1416,9 @@ class Browser {
     // Splitting is a move into the pane just made, the way tmux hands the
     // cursor to the shell a split opens: the keys land where the split did.
     this.focusPane(partner.id);
+    // An empty pane is a command line waiting: the bar comes up on it, as it
+    // does for a new tab, so the page is one address away.
+    this.showBar('address');
   }
 
   /**
@@ -1479,9 +1484,17 @@ class Browser {
    * Ctrl+W, `:q`: close the pane the keys are in. The tab stays — it is a
    * buffer, and closing the window that showed it does not delete it — so it
    * is still in the tab list and comes back with a split or a click.
+   *
+   * With no split there is no pane to close, and the editor quits instead of
+   * doing nothing: here that is this window going away, with every tab it held
+   * left in the buffer list rather than killed.
    */
   closePane() {
-    if (!this.panes || !this.win || this.activeTabId === null) return false;
+    if (!this.win || this.activeTabId === null) return false;
+    if (!this.panes) {
+      this.win.close();
+      return true;
+    }
     const closing = this.activeTabId;
     const tab = this.tabs.get(closing);
     if (!tab || !showsTab(this.panes, closing)) return false;
@@ -1498,6 +1511,9 @@ class Browser {
     this.layout();
     updateSidebars();
     this.persistTabs();
+    // The keys belonged to the pane that just went: hand them to the page that
+    // is left, so typing goes to it without a click first.
+    this.focusContent();
     return true;
   }
 
@@ -1516,6 +1532,7 @@ class Browser {
     this.layout();
     updateSidebars();
     this.persistTabs();
+    this.focusContent();
     return true;
   }
 
@@ -1672,6 +1689,19 @@ class Browser {
     this.tabView(tab).webContents.loadURL(url).catch((err) => {
       console.warn(`[tbrowser] navigation failed: ${err.message}`);
     });
+  }
+
+  /**
+   * A buffer coming back onto a screen: the same tab, the same page, the same
+   * renderer — nothing loads, so it is there in the frame it was asked for.
+   */
+  adoptBuffer(entry) {
+    const tab = { id: entry.id, view: null, title: entry.title, url: entry.url, attached: false };
+    this.tabs.set(tab.id, tab);
+    this.swapTabView(tab, entry.view, { attach: false });
+    this.activateTab(tab.id);
+    updateSidebars();
+    return tab;
   }
 
   /**
@@ -2299,6 +2329,8 @@ class Browser {
         this.focusPane(this.paneAfterClose(id), { focus: false });
       }
       this.layout();
+      // The pane that had the keys is gone: the page that is left takes them.
+      this.focusContent();
     }
 
     if (this.activeTabId === id) {
@@ -2575,7 +2607,7 @@ class Browser {
 
 /** Every window's tabs as the shared list wants them: ids, titles, addresses. */
 function windowTabLists() {
-  return [...windows].map((window) => ({
+  const lists = [...windows].map((window) => ({
     id: window.id,
     tabs: [...window.tabs.values()].map((tab) => ({
       id: tab.id,
@@ -2584,6 +2616,21 @@ function windowTabLists() {
       active: tab.id === window.activeTabId,
     })),
   }));
+  // The buffers no window is showing come last, under their own heading: they
+  // are still loaded, so they belong in the same list as the tabs on screen.
+  if (parkedBuffers.size) {
+    lists.push({
+      id: 0,
+      parked: true,
+      tabs: [...parkedBuffers.values()].map((entry) => ({
+        id: entry.id,
+        title: entry.title,
+        url: entry.url,
+        active: false,
+      })),
+    });
+  }
+  return lists;
 }
 
 /** The tabs of every window, this one's first. */
@@ -2772,14 +2819,63 @@ function windowOfTab(id) {
 }
 
 /**
+ * Keep a window's tab as a buffer nobody is showing: its page stays loaded and
+ * its row moves under the buffers heading. The window is going away, so the
+ * view has to leave it first; the renderer itself is kept, which is what makes
+ * bringing the page back a swap instead of a load.
+ */
+function parkBuffer(window, tab) {
+  const view = tab.view;
+  if (!view || view.webContents.isDestroyed()) return;
+  window.unwireTab(view.webContents);
+  parkedBuffers.set(tab.id, {
+    id: tab.id,
+    view,
+    title: tab.title || window.titleFor(tab),
+    url: window.urlOf(tab),
+    session: window.sessionName || '',
+  });
+  // The oldest buffer goes when the list is full: a page nobody has reached
+  // for in sixteen windows' worth of opening is memory the browser needs.
+  while (parkedBuffers.size > PARKED_MAX) {
+    const oldest = parkedBuffers.keys().next().value;
+    const entry = parkedBuffers.get(oldest);
+    parkedBuffers.delete(oldest);
+    entry.view.webContents.close();
+  }
+}
+
+/** Kill a parked buffer for good, the `:bd` of a page no window is showing. */
+function killBuffer(id) {
+  const entry = parkedBuffers.get(id);
+  if (!entry) return false;
+  parkedBuffers.delete(id);
+  if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
+  updateSidebars();
+  return true;
+}
+
+/** Take a parked buffer out of the pool, onto that window's screen. */
+function resumeBuffer(id, window) {
+  const entry = parkedBuffers.get(id);
+  if (!entry) return 'no such buffer';
+  parkedBuffers.delete(id);
+  window.hideBar();
+  window.adoptBuffer(entry);
+  updateSidebars();
+  return null;
+}
+
+/**
  * Go to a tab wherever it lives: a tab of this window is a plain switch, one
  * held by another window brings that window to the front with it, the way
- * `switch-client` does in tmux. A test launch never shows a window, so there
- * it is only the switch.
+ * `switch-client` does in tmux. A buffer no window shows comes onto this one's
+ * screen with the page it still has. A test launch never shows a window, so
+ * there it is only the switch.
  */
 function revealTab(id, from) {
   const owner = windowOfTab(id);
-  if (!owner) return 'no such tab';
+  if (!owner) return resumeBuffer(id, from);
   from.hideBar();
   if (owner !== from && !NO_UI && owner.win && !owner.win.isDestroyed()) {
     if (!owner.win.isVisible()) owner.win.show();
@@ -3223,8 +3319,12 @@ ipcMain.on('sidebar:action', (event, action) => {
   // holding it. `new` is always this window's.
   const owner = Number.isInteger(id) ? windowOfTab(id) : null;
   if (action.type === 'activate') revealTab(id, window);
-  else if (action.type === 'close') owner?.closeTab(id);
-  else if (action.type === 'new') window.createTab({ openBar: true });
+  // A row of a window is that window's tab to close; a row under the buffers
+  // heading is a buffer with no window, and closing it kills it outright.
+  else if (action.type === 'close') {
+    if (owner) owner.closeTab(id);
+    else killBuffer(id);
+  } else if (action.type === 'new') window.createTab({ openBar: true });
 });
 
 ipcMain.handle('panel:get', (event, page) => {

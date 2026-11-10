@@ -19,6 +19,9 @@ function createHeading() {
 function createRow(id) {
   const row = document.createElement('div');
   row.className = 'tab';
+  // The row's identity, so a list can say which tab it is without a second
+  // map, and a buffer row can be told apart from a window's tab.
+  row.dataset.id = String(id);
 
   const title = document.createElement('span');
   title.className = 'title';
@@ -58,7 +61,7 @@ function render(tabs) {
         heading = createHeading();
         headings.set(windowId, heading);
       }
-      const label = tab.here ? 'this window' : `window ${tab.slot}`;
+      const label = tab.parked ? 'buffers' : tab.here ? 'this window' : `window ${tab.slot}`;
       if (heading.textContent !== label) heading.textContent = label;
       const where = placed ? placed.nextSibling : list.firstChild;
       if (heading !== where) list.insertBefore(heading, where);
@@ -73,9 +76,13 @@ function render(tabs) {
     }
 
     // Only the focused tab of this window is "the" tab: another window's
-    // focused tab is a page that window shows, not this one's.
-    const className = tab.here && tab.active ? 'tab active' : 'tab';
+    // focused tab is a page that window shows, not this one's. A buffer is a
+    // row of its own kind: nothing is showing it, and × kills it for good.
+    const className = `tab${tab.here && tab.active ? ' active' : ''}${tab.parked ? ' parked' : ''}`;
     if (row.className !== className) row.className = className;
+    const close = row.lastElementChild;
+    const closeTitle = tab.parked ? 'Kill buffer' : 'Close tab (Ctrl+W)';
+    if (close.title !== closeTitle) close.title = closeTitle;
 
     const name = tab.title || '';
     const title = row.firstElementChild;

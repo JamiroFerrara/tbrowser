@@ -48,14 +48,55 @@ test('an inset keeps each pane off the edge and the frames apart', () => {
   assert.equal(1200 - (rects.get(2).x + rects.get(2).width), 2);
 });
 
-test('a split inside a split cuts only the half it was opened in', () => {
-  // Left half as it is, right half cut top and bottom: three panes, the way
+test('the first pane keeps its place when the other half is split', () => {
+  // Left is one pane, right is cut top and bottom: three panes, the way
   // `:split` after `:vsplit` leaves them.
   const tree = vertical(leaf(1), horizontal(leaf(2), leaf(3)));
   const rects = paneRects(tree, 1200, 756, 2, 0);
-  assert.deepEqual(rects.get(1), { x: 0, y: 0, width: 599, height: 756 });
-  assert.deepEqual(rects.get(2), { x: 601, y: 0, width: 599, height: 377 });
-  assert.deepEqual(rects.get(3), { x: 601, y: 379, width: 599, height: 377 });
+  assert.equal(rects.get(1).x, 0);
+  assert.equal(rects.get(1).y, 0);
+  assert.equal(rects.get(2).x, rects.get(1).width + 2);
+  assert.equal(rects.get(3).x, rects.get(2).x);
+  assert.equal(rects.get(3).y, rects.get(2).height + 2);
+});
+
+test('three panes side by side come out a third each, as vim equalizes them', () => {
+  // Splitting twice, the second split did not take half of the first split's
+  // half: `equalalways` is on, so all three are the same width.
+  for (const tree of [vertical(vertical(leaf(1), leaf(2)), leaf(3)), vertical(leaf(1), vertical(leaf(2), leaf(3)))]) {
+    const rects = paneRects(tree, 1200, 756, 4, 2);
+    const widths = [...rects.values()].map((rect) => rect.width);
+    for (const width of widths) assert.ok(Math.abs(width - 397) <= 2, `width ${width} in ${JSON.stringify(widths)}`);
+    assert.equal(widths[0] + widths[1] + widths[2] + 8, 1196);
+  }
+  const stacked = paneRects(horizontal(horizontal(leaf(1), leaf(2)), leaf(3)), 1200, 756, 4, 2);
+  const heights = [...stacked.values()].map((rect) => rect.height);
+  for (const height of heights) assert.ok(Math.abs(height - 249) <= 2, `height ${height}`);
+  assert.equal(heights[0] + heights[1] + heights[2] + 8, 752);
+});
+
+test('panes of a mixed split still get the same room', () => {
+  // A vertical split then a horizontal one: the two stacked panes take two
+  // thirds of the width between them, so each pane covers a third of the area.
+  const tree = vertical(leaf(1), horizontal(leaf(2), leaf(3)));
+  const rects = paneRects(tree, 1200, 756, 4, 2);
+  const area = (rect) => rect.width * rect.height;
+  const third = area(rects.get(1));
+  for (const tab of [2, 3]) assert.ok(Math.abs(area(rects.get(tab)) - third) <= third * 0.02);
+});
+
+test('four panes in a cross are four quarters', () => {
+  const tree = vertical(horizontal(leaf(1), leaf(2)), horizontal(leaf(3), leaf(4)));
+  const rects = paneRects(tree, 1200, 756, 4, 0);
+  const width = rects.get(1).width;
+  const height = rects.get(1).height;
+  for (const rect of rects.values()) {
+    assert.equal(rect.width, width);
+    assert.equal(rect.height, height);
+  }
+  assert.equal(width * 2 + 4, 1200);
+  assert.equal(height * 2 + 4, 756);
+  assert.equal(rects.get(4).y, rects.get(1).y + height + 4);
 });
 
 test('the panes read top-left first, whatever the tree nesting', () => {

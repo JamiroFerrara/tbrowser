@@ -51,6 +51,20 @@ test('a tab keeps its own window and focus flag wherever it is listed', () => {
   assert.equal(news.here, false);
 });
 
+test('a buffer no window shows is a row of its own kind', () => {
+  const rows = sharedTabs(
+    [
+      ...windows,
+      { id: 0, parked: true, tabs: [{ id: 9, title: 'Parked', url: 'https://example.com/', active: false }] },
+    ],
+    1,
+  );
+  const buffer = rows.find((row) => row.id === 9);
+  assert.equal(buffer.parked, true);
+  assert.equal(buffer.here, false);
+  assert.equal(rows.find((row) => row.id === 1).parked, false);
+});
+
 test('a window that is gone leaves no rows, and no window is "here"', () => {
   const rows = sharedTabs(windows, 99);
   assert.equal(rows.length, 5);

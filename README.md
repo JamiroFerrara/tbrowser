@@ -98,7 +98,7 @@ require them.
 | `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move to the pane that way |
 | `Ctrl+E` | toggle the sidebar |
 | `Ctrl+,` | open the settings page, and put it away again |
-| `Ctrl+W` | close the pane, the tab stays (`:q`) |
+| `Ctrl+W` | close the pane; the tab stays, and with no split it closes the window |
 | `Ctrl+Shift+W` | kill the tab (`:bd`) |
 | `F12`, `Ctrl+Shift+I` | DevTools |
 | `Ctrl+N` | new window |
@@ -278,31 +278,49 @@ switch it in one and the other follows.
 Splits work the way the editor's windows do: a pane is a window, a tab is the
 buffer it shows, and the two are separate things. `Alt+S` divides the pane the
 keys are in side by side, `Alt+Shift+S` stacks it; splitting again divides the
-focused half, so four panes are two splits of a split, not one flat grid.
-`Alt+H`/`Alt+J`/`Alt+K`/`Alt+L` move to the pane that way — straight ahead
-beats diagonal, so a move never lands the long way round — and clicking a page
-focuses its pane. The command bar, the keys and the sidebar act on the focused
-pane, and the sidebar marks it.
+focused half. `Alt+H`/`Alt+J`/`Alt+K`/`Alt+L` move to the pane that way —
+straight ahead beats diagonal, so a move never lands the long way round — and
+clicking a page focuses its pane. The command bar, the keys and the sidebar act
+on the focused pane, and the sidebar marks it.
+
+Panes are all the same size, the editor's `equalalways`: three side by side are
+a third each, never 50, 25 and 25. The panes appear in one step, all at their
+final size, so the pages reflow once and no frame is spent moving a divider
+across them.
+
+Every split opens **an empty buffer**, as `:new` does: a place to type the next
+address, never a second copy of the page you already have on screen. The bar
+comes up on it, so the page is one address away.
 
 The two close verbs are the editor's, and they are not the same key:
 
-- **`Ctrl+W`** is `:q`: it closes the pane and leaves the tab loaded. The tab
-  is still in the list and the sidebar, and reopening it costs nothing.
+- **`Ctrl+W`** is `:q`: it closes the pane and leaves the tab loaded, and the
+  keys go to the pane that is left. With no split there is nothing to close but
+  the window, so `Ctrl+W` closes the window — and its tabs stay as buffers.
 - **`Ctrl+Shift+W`** is `:bd`: it kills the tab itself, and the pane that was
   showing it goes with it.
 
-A pane opening shows the tab you were just on, as `:sp` shows the buffer you
-left beside the one you are in; a window holding a single tab opens a second,
-empty page to give it company. The panes appear in one step, all at their final
-size: the pages reflow once and no frame is spent moving a divider across them.
-
-- The pane order is fixed (first pane left or top), so focusing a pane never
-  swaps the pictures.
 - One pane is no split: closing down to it leaves the tab filling the window.
 - The arrangement is remembered in `state.json` and in the session, so a
   restored window comes back with its panes; a file from the older two-pane
   browser is read as the split it stood for.
 - `:only` closes every other pane and keeps every tab.
+
+## Buffers
+
+A tab is a buffer, so it outlives the window that was showing it. When a window
+closes, its pages are kept loaded rather than discarded: they come back, still
+rendered, when you ask for them. The buffer list is the browser's, not one
+window's — `Ctrl+P` finds them and `Enter` puts one on the screen you are in,
+already loaded, and the sidebar lists them under a **buffers** heading, with
+`×` to kill one for good.
+
+- Sixteen buffers are kept; the oldest goes when the list is full, because a
+  page nobody has reached for is memory the browser needs back.
+- Killing is deliberate: `Ctrl+Shift+W` on an open tab, `×` on a buffer row, or
+  `:bd`. Closing a pane or a window never kills one.
+- Quitting ends the process, so the kept pages go with it; the sessions bring
+  their addresses back on the next launch.
 
 ## New tab
 
