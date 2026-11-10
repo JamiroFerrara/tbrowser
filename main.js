@@ -451,7 +451,7 @@ function applyBlur() {
       }
     }
   }
-  for (const view of freeTabs) {
+  for (const { view } of freeTabs) {
     if (!view.webContents.isDestroyed()) view.setBackgroundColor(bg);
   }
 }
@@ -484,14 +484,20 @@ function warmChrome() {
 /**
  * The empty tab is the same page every time, and starting a renderer for it on
  * the keystroke is what made ctrl+t wait seconds for a splash that never
- * changes. One view is kept loaded and painted here, so a new tab swaps it in
- * already showing: the quote is on screen in the same frame as the tab, and
+ * changes. The views are kept loaded and painted here, so a new tab swaps one
+ * in already showing: the quote is on screen in the same frame as the tab, and
  * nothing about the new tab waits on a renderer.
  *
- * The spare is never wired to a window until it is taken, so it holds no keys
- * and no page state; taking it starts the next spare in the background.
+ * Two are kept, because a split and the tab beside it are the same keystroke
+ * twice: one spare meant the second empty pane paid for a cold renderer and
+ * showed its background first. A finished load is taken before one still
+ * loading, and taking either starts a replacement in the background.
+ *
+ * The spares are never wired to a window until taken, so they hold no keys and
+ * no page state.
  */
 const freeTabs = [];
+const WARM_TABS = 2;
 
 /**
  * Buffers whose window closed. A tab is a buffer: closing the window that
@@ -502,6 +508,16 @@ const freeTabs = [];
  */
 const parkedBuffers = new Map(); // tab id -> { id, view, title, url, session }
 const PARKED_MAX = 16;
+
+/**
+ * Pages this browser has open without a window behind them. Closing a tab is a
+ * logical close — its address stays here, with no renderer and no memory —
+ * and asking for it again loads it, which is what "not loaded" means. Ids are
+ * negative so a buffer can never be mistaken for a tab.
+ */
+const dormantBuffers = new Map(); // -1, -2, ... -> { id, url, title, loaded: false }
+const DORMANT_MAX = 40;
+let nextBufferId = -1;
 
 function tabPreferences() {
   return {
@@ -534,25 +550,33 @@ function tabPreferences() {
 }
 
 function warmTab() {
-  if (freeTabs.length) return;
-  mark('tab warming');
-  const view = newView(tabPreferences(), surfaceBg());
-  view.webContents.loadURL(HOME).catch(() => {});
-  freeTabs.push(view);
+  while (freeTabs.length < WARM_TABS) {
+    mark('tab warming');
+    const view = newView(tabPreferences(), surfaceBg());
+    const entry = { view, ready: false };
+    view.webContents.once('did-finish-load', () => {
+      entry.ready = true;
+    });
+    view.webContents.loadURL(HOME).catch(() => {});
+    freeTabs.push(entry);
+  }
 }
 
-/** A ready home view, or null when the pool is still cold. */
+/**
+ * A spare home view, or null when the pool is still cold. A finished load goes
+ * first: it is the one that paints in the frame the tab takes it, and the
+ * other may still be on its way.
+ */
 function takeWarmTab() {
-  while (freeTabs.length) {
-    const view = freeTabs.pop();
-    if (!view.webContents.isDestroyed()) {
-      mark('tab reused');
-      setImmediate(warmTab);
-      return view;
-    }
-    mark('tab dropped');
-  }
-  return null;
+  const live = freeTabs.filter((entry) => !entry.view.webContents.isDestroyed());
+  freeTabs.length = 0;
+  if (!live.length) return null;
+  const index = live.findIndex((entry) => entry.ready);
+  const [taken] = live.splice(index === -1 ? 0 : index, 1);
+  freeTabs.push(...live);
+  mark('tab reused');
+  setImmediate(warmTab);
+  return taken.view;
 }
 
 /**
@@ -1224,7 +1248,9 @@ class Browser {
     try {
       const urls = Array.isArray(state.tabs) ? state.tabs : [];
       const ids = [...this.tabs.keys()];
-      for (let i = urls.length; i < ids.length; i += 1) this.closeTab(ids[i]);
+      // A tab the session no longer has: following the session closes it
+      // here, and that is not the user closing a tab, so it leaves no buffer.
+      for (let i = urls.length; i < ids.length; i += 1) this.closeTab(ids[i], { remember: false });
       for (let i = 0; i < urls.length; i += 1) {
         const id = [...this.tabs.keys()][i];
         if (id === undefined) {
@@ -1781,9 +1807,9 @@ class Browser {
     }
     // The splash the tab was showing goes back to its own pool, as it does
     // when an empty tab is closed.
-    if (freeTabs.length === 0) {
+    if (freeTabs.length < WARM_TABS) {
       mark('tab parked');
-      freeTabs.push(view);
+      freeTabs.push({ view, ready: wc.isLoadingMainFrame() === false });
     } else {
       wc.close();
     }
@@ -2273,15 +2299,18 @@ class Browser {
   }
 
   /**
-   * Ctrl+Shift+W, `:bd`: kill the tab. The pane that showed it closes with it,
-   * the way `:bd` shuts the window that was showing the buffer — and when no
-   * pane is left the next tab takes the window, since a tab list with tabs in
-   * it always has one on screen.
+   * Ctrl+Shift+W, `:bd`: close the tab, the way `:bd` closes a buffer. The page
+   * is not lost — its address goes to the list of pages open without a window,
+   * ready to be loaded again — and the pane it was in shows the next tab in
+   * the list. A tab with nowhere else to go takes the window with it.
    */
-  closeTab(id) {
+  closeTab(id, { remember = true } = {}) {
     const tab = this.tabs.get(id);
     if (!tab) return;
+    const order = [...this.tabs.keys()];
+    const place = order.indexOf(id);
     const wasPane = this.inPane(id);
+    if (remember) rememberBuffer(this, tab);
     this.tabs.delete(id);
     // The step back was this tab's: another tab has no history for it.
     if (this.backStep?.tabId === id) this.dropBackStep();
@@ -2300,10 +2329,10 @@ class Browser {
       if (!wc.isDestroyed()) {
         // An empty tab was the splash: closing it hands the painted page back to
         // the pool for the next ctrl+t, so it never pays for another renderer.
-        if (wc.getURL() === HOME && freeTabs.length === 0) {
+        if (wc.getURL() === HOME && freeTabs.length < WARM_TABS) {
           mark('tab parked');
           this.unwireTab(wc);
-          freeTabs.push(tab.view);
+          freeTabs.push({ view: tab.view, ready: true });
         } else {
           wc.close();
         }
@@ -2314,9 +2343,9 @@ class Browser {
     if (wasPane) {
       const remaining = this.removePaneFor(id);
       if (!this.panes) {
-        // No split is left: whatever tab took its place fills the window.
+        // No split is left: the tab that took its place fills the window.
         this.activeTabId = null;
-        const next = remaining[0] ?? [...this.tabs.keys()].pop();
+        const next = remaining[0] ?? this.nextTabAfter(place);
         if (next === undefined) {
           this.win.close();
           return;
@@ -2335,7 +2364,7 @@ class Browser {
 
     if (this.activeTabId === id) {
       this.activeTabId = null;
-      const next = [...this.tabs.keys()].pop();
+      const next = this.nextTabAfter(place);
       if (next === undefined) {
         this.win.close();
         return;
@@ -2344,6 +2373,12 @@ class Browser {
     }
     updateSidebars();
     this.persistTabs();
+  }
+
+  /** The tab that takes the place of one just closed: the next, else the one before. */
+  nextTabAfter(place) {
+    const order = [...this.tabs.keys()];
+    return order[place] ?? order[Math.max(0, place - 1)];
   }
 
   cycleTab(delta) {
@@ -2616,17 +2651,20 @@ function windowTabLists() {
       active: tab.id === window.activeTabId,
     })),
   }));
-  // The buffers no window is showing come last, under their own heading: they
-  // are still loaded, so they belong in the same list as the tabs on screen.
-  if (parkedBuffers.size) {
+  // The buffers no window is showing come last, under their own heading: the
+  // loaded ones are pages that are still there, the dormant ones are addresses
+  // waiting for a load.
+  const buffers = [...parkedBuffers.values()].concat([...dormantBuffers.values()]);
+  if (buffers.length) {
     lists.push({
       id: 0,
       parked: true,
-      tabs: [...parkedBuffers.values()].map((entry) => ({
+      tabs: buffers.map((entry) => ({
         id: entry.id,
         title: entry.title,
         url: entry.url,
         active: false,
+        loaded: entry.loaded !== false,
       })),
     });
   }
@@ -2827,12 +2865,31 @@ function windowOfTab(id) {
 function parkBuffer(window, tab) {
   const view = tab.view;
   if (!view || view.webContents.isDestroyed()) return;
+  const url = window.urlOf(tab);
+  const title = tab.title || window.titleFor(tab);
   window.unwireTab(view.webContents);
+  // The splash is not a buffer: every split opens one, and a window closing
+  // with three empty tabs must not park three rows of nothing.
+  if (!url || url === HOME) {
+    if (freeTabs.length < WARM_TABS) {
+      freeTabs.push({ view, ready: true });
+    } else {
+      view.webContents.close();
+    }
+    return;
+  }
+  // One row per page: a buffer already holding this address would only be the
+  // same page twice.
+  if (bufferFor(url)) {
+    view.webContents.close();
+    return;
+  }
   parkedBuffers.set(tab.id, {
     id: tab.id,
     view,
-    title: tab.title || window.titleFor(tab),
-    url: window.urlOf(tab),
+    title,
+    url,
+    loaded: true,
     session: window.sessionName || '',
   });
   // The oldest buffer goes when the list is full: a page nobody has reached
@@ -2845,25 +2902,66 @@ function parkBuffer(window, tab) {
   }
 }
 
-/** Kill a parked buffer for good, the `:bd` of a page no window is showing. */
-function killBuffer(id) {
-  const entry = parkedBuffers.get(id);
-  if (!entry) return false;
-  parkedBuffers.delete(id);
-  if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
-  updateSidebars();
-  return true;
+/** The buffer already holding that address, loaded or not, or null. */
+function bufferFor(url) {
+  for (const entry of parkedBuffers.values()) if (entry.url === url) return entry;
+  for (const entry of dormantBuffers.values()) if (entry.url === url) return entry;
+  return null;
 }
 
-/** Take a parked buffer out of the pool, onto that window's screen. */
+/**
+ * A closed tab's address, kept as a page this browser has open without a
+ * window behind it. Nothing is loaded — asking for it loads it — which is why
+ * an empty tab is not worth a row here.
+ */
+function rememberBuffer(window, tab) {
+  const url = window.urlOf(tab);
+  if (!url || url === HOME) return;
+  if (bufferFor(url)) return;
+  const id = nextBufferId--;
+  dormantBuffers.set(id, { id, url, title: tab.title || window.titleFor(tab), loaded: false });
+  while (dormantBuffers.size > DORMANT_MAX) {
+    dormantBuffers.delete(dormantBuffers.keys().next().value);
+  }
+}
+
+/** Kill a parked buffer for good, the `:bd` of a page no window is showing. */
+function killBuffer(id) {
+  const parked = parkedBuffers.get(id);
+  if (parked) {
+    parkedBuffers.delete(id);
+    if (!parked.view.webContents.isDestroyed()) parked.view.webContents.close();
+    updateSidebars();
+    return true;
+  }
+  const dormant = dormantBuffers.delete(id);
+  if (dormant) updateSidebars();
+  return dormant;
+}
+
+/**
+ * Take a buffer out of the pool and onto that window's screen: a loaded one
+ * comes back with the page it still has, a dormant one loads its address the
+ * ordinary way.
+ */
 function resumeBuffer(id, window) {
-  const entry = parkedBuffers.get(id);
-  if (!entry) return 'no such buffer';
-  parkedBuffers.delete(id);
-  window.hideBar();
-  window.adoptBuffer(entry);
-  updateSidebars();
-  return null;
+  const parked = parkedBuffers.get(id);
+  if (parked) {
+    parkedBuffers.delete(id);
+    window.hideBar();
+    window.adoptBuffer(parked);
+    updateSidebars();
+    return null;
+  }
+  const dormant = dormantBuffers.get(id);
+  if (dormant) {
+    dormantBuffers.delete(id);
+    window.hideBar();
+    window.createTab({ url: dormant.url });
+    updateSidebars();
+    return null;
+  }
+  return 'no such buffer';
 }
 
 /**

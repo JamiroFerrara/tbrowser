@@ -77,8 +77,10 @@ function render(tabs) {
 
     // Only the focused tab of this window is "the" tab: another window's
     // focused tab is a page that window shows, not this one's. A buffer is a
-    // row of its own kind: nothing is showing it, and × kills it for good.
-    const className = `tab${tab.here && tab.active ? ' active' : ''}${tab.parked ? ' parked' : ''}`;
+    // row of its own kind: nothing is showing it, × forgets it, and one that
+    // is not loaded yet says so by being dimmed.
+    const buffer = tab.parked ? (tab.loaded === false ? ' parked unloaded' : ' parked') : '';
+    const className = `tab${tab.here && tab.active ? ' active' : ''}${buffer}`;
     if (row.className !== className) row.className = className;
     const close = row.lastElementChild;
     const closeTitle = tab.parked ? 'Kill buffer' : 'Close tab (Ctrl+W)';

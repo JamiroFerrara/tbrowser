@@ -55,13 +55,22 @@ test('a buffer no window shows is a row of its own kind', () => {
   const rows = sharedTabs(
     [
       ...windows,
-      { id: 0, parked: true, tabs: [{ id: 9, title: 'Parked', url: 'https://example.com/', active: false }] },
+      {
+        id: 0,
+        parked: true,
+        tabs: [
+          { id: 9, title: 'Parked', url: 'https://example.com/', active: false, loaded: true },
+          { id: -1, title: 'Dormant', url: 'https://example.com/b', active: false, loaded: false },
+        ],
+      },
     ],
     1,
   );
   const buffer = rows.find((row) => row.id === 9);
   assert.equal(buffer.parked, true);
+  assert.equal(buffer.loaded, true);
   assert.equal(buffer.here, false);
+  assert.equal(rows.find((row) => row.id === -1).loaded, false);
   assert.equal(rows.find((row) => row.id === 1).parked, false);
 });
 

@@ -297,8 +297,8 @@ The two close verbs are the editor's, and they are not the same key:
 - **`Ctrl+W`** is `:q`: it closes the pane and leaves the tab loaded, and the
   keys go to the pane that is left. With no split there is nothing to close but
   the window, so `Ctrl+W` closes the window — and its tabs stay as buffers.
-- **`Ctrl+Shift+W`** is `:bd`: it kills the tab itself, and the pane that was
-  showing it goes with it.
+- **`Ctrl+Shift+W`** is `:bd`: it closes the tab — the next tab in the list
+  takes its place — and the page's address goes to the buffers, unloaded.
 
 - One pane is no split: closing down to it leaves the tab filling the window.
 - The arrangement is remembered in `state.json` and in the session, so a
@@ -308,18 +308,23 @@ The two close verbs are the editor's, and they are not the same key:
 
 ## Buffers
 
-A tab is a buffer, so it outlives the window that was showing it. When a window
-closes, its pages are kept loaded rather than discarded: they come back, still
-rendered, when you ask for them. The buffer list is the browser's, not one
-window's — `Ctrl+P` finds them and `Enter` puts one on the screen you are in,
-already loaded, and the sidebar lists them under a **buffers** heading, with
-`×` to kill one for good.
+A tab is a buffer, so it outlives the window that was showing it, and killing
+one closes the tab without losing the page. Two kinds end up in the list, both
+under a **buffers** heading in the sidebar and both found by `Ctrl+P`:
 
-- Sixteen buffers are kept; the oldest goes when the list is full, because a
-  page nobody has reached for is memory the browser needs back.
-- Killing is deliberate: `Ctrl+Shift+W` on an open tab, `×` on a buffer row, or
-  `:bd`. Closing a pane or a window never kills one.
-- Quitting ends the process, so the kept pages go with it; the sessions bring
+- **Loaded.** A window closed while the page was open, and the page is still in
+  memory. Picking it puts it back on screen in the frame you asked for it.
+- **Not loaded.** A tab was closed with `Ctrl+Shift+W` (or `:bd`). Its address
+  is kept and its row is dimmed; picking it loads the page the ordinary way.
+
+`×` on a buffer row, or `:bd` on a loaded one, forgets it for good. Empty tabs
+are never kept: a split opens the splash, and a window closing with three
+empties leaves nothing behind.
+
+- Sixteen loaded buffers are kept; the oldest goes when the list is full,
+  because a page nobody has reached for is memory the browser needs back.
+  Not-loaded addresses are cheap, so forty of them are remembered.
+- Quitting ends the process, so the loaded pages go with it; the sessions bring
   their addresses back on the next launch.
 
 ## New tab
