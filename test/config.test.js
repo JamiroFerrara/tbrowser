@@ -60,6 +60,16 @@ test('preloading is on by default and only a boolean changes it', () => {
   assert.equal(normalize({ preload: 'yes' }).preload, true);
 });
 
+test('ctrl+comma ships bound to the settings page', () => {
+  assert.deepEqual(normalize({}).keybindings.settings, ['ctrl+,']);
+  // The comma arrives with a modifier of its own and no shift, so the binding
+  // has to match the key Electron reports, not the text a layout produces.
+  assert.equal(matches(key({ key: ',', control: true }), normalize({}).keybindings.settings), true);
+  assert.equal(matches(key({ key: ',', control: true, shift: true }), normalize({}).keybindings.settings), true);
+  assert.equal(matches(key({ key: ',', control: true, alt: true }), normalize({}).keybindings.settings), false);
+  assert.equal(matches(key({ key: ',' }), normalize({}).keybindings.settings), false);
+});
+
 test('binding text parses comma-separated accelerators', () => {
   assert.deepEqual(parseBindingText('ctrl+l, ctrl+k'), { ok: true, list: ['ctrl+l', 'ctrl+k'] });
   assert.deepEqual(parseBindingText('  F5  '), { ok: true, list: ['f5'] });

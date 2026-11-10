@@ -2470,6 +2470,13 @@ class Browser {
       this.setSidebar(!this.sidebarVisible);
       return true;
     }
+    // C-, is the editor's settings key: open the page, and pressed again while
+    // it is up, put it away.
+    if (matchesAny(input, keys.settings)) {
+      if (this.panelVisible && this.currentPanel === 'settings') this.closePanel();
+      else this.openPanel('settings');
+      return true;
+    }
     if (matchesAny(input, keys.devtools)) {
       const target = this.barVisible ? this.bar : this.activeTab()?.view;
       target?.webContents.toggleDevTools();

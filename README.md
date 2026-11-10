@@ -96,6 +96,8 @@ require them.
 | `Alt+P` | open the session picker |
 | `Alt+S` / `Alt+Shift+S` | split side by side / stacked |
 | `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move to the pane that way |
+| `Ctrl+E` | toggle the sidebar |
+| `Ctrl+,` | open the settings page, and put it away again |
 | `Ctrl+W` | close the pane, the tab stays (`:q`) |
 | `Ctrl+Shift+W` | kill the tab (`:bd`) |
 | `F12`, `Ctrl+Shift+I` | DevTools |
@@ -132,6 +134,7 @@ Everything is rebindable in `config.json` (created on first run):
     "splitVertical": ["alt+s"],
     "splitHorizontal": ["alt+shift+s"],
     "focusPane": ["alt+h", "alt+j", "alt+k", "alt+l"],
+    "settings": ["ctrl+,"],
     "closePane": ["ctrl+w"],
     "closeTab": ["ctrl+shift+w"],
     "devtools": ["f12", "ctrl+shift+i"],

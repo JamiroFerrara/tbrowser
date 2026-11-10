@@ -25,6 +25,7 @@ const ACTION_LABELS = {
   nextSuggestion: 'Next suggestion',
   prevSuggestion: 'Previous suggestion',
   toggleSidebar: 'Toggle sidebar',
+  settings: 'Settings page',
   workspaces: 'Session picker',
   splitVertical: 'Split side by side',
   splitHorizontal: 'Split stacked',
