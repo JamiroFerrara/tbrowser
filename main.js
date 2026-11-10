@@ -25,6 +25,7 @@ const { enableAdblock } = require('./lib/adblock');
 const { Visits } = require('./lib/history');
 const { frecency } = require('./lib/frecency');
 const { PreloadPool } = require('./lib/preload');
+const { watchGesture, fromUser } = require('./lib/popups');
 const { suggestions } = require('./lib/suggest');
 const { Sessions, normalizeName, autoName, cleanLayout } = require('./lib/sessions');
 const {
@@ -364,6 +365,11 @@ function newView(webPreferences, background = chromeBg()) {
  * opened it waits forever — this is why "sign in with Google" did nothing.
  * The popup shares the app's session, so the cookies a login sets are the ones
  * the page that opened it reads, and Electron closes it with its opener.
+ *
+ * An ad opens one too, and Electron hands every `window.open` to us without
+ * asking whether a person was behind it. `lib/popups.js` is where that
+ * question is answered — a window is only the user's if their click on the
+ * page is still recent.
  */
 function popupWindowOptions() {
   return {
@@ -375,6 +381,7 @@ function popupWindowOptions() {
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: false,
+      autoplayPolicy: 'document-user-activation-required',
     },
   };
 }
@@ -508,6 +515,11 @@ function tabPreferences() {
     // a background tab and a favourite kept warm crawl through their own
     // timers, so the page handed over on the keystroke is still half-loaded.
     backgroundThrottling: false,
+    // Electron lets any page start making noise with nobody touching it, which
+    // Chrome does not: an ad in a background tab, or in a favourite loaded by
+    // the pool, played its soundtrack out of an empty browser. Sound now waits
+    // for a click in the page it comes from, the policy Chrome runs by default.
+    autoplayPolicy: 'document-user-activation-required',
   };
 }
 
@@ -2054,6 +2066,7 @@ class Browser {
       'did-navigate-in-page',
       'focus',
       'before-input-event',
+      'input-event',
     ]) {
       wc.removeAllListeners(event);
     }
@@ -2071,6 +2084,8 @@ class Browser {
       // we build ourselves cannot. A plain target=_blank link still lands in a
       // tab, as it always did.
       if (disposition === 'new-window' || features) {
+        // A popunder is the same call from a timer: no click, no window.
+        if (!fromUser(wc)) return { action: 'deny' };
         return { action: 'allow', overrideBrowserWindowOptions: popupWindowOptions() };
       }
       this.createTab({ url });
@@ -2121,6 +2136,7 @@ class Browser {
       if (this.inPane(tab.id) && tab.id !== this.activeTabId) this.focusPane(tab.id, { focus: false });
     });
     this.watchKeys(wc);
+    watchGesture(wc);
   }
 
   /** Create a tab's renderer on first use; a restored tab costs nothing until then. */
@@ -3587,6 +3603,19 @@ function refreshAdblockOwner() {
 }
 
 /**
+ * Chromium asks the user for a permission; this browser has no question to put
+ * on screen, and Electron's default is to answer yes for every page and every
+ * permission. A notification is what an ad asks for by itself, and it arrives
+ * as a Windows toast beside the browser — so that answer becomes no, and the
+ * rest keep the answer they already got.
+ */
+function guardPermissions(target) {
+  const allowed = (permission) => permission !== 'notifications';
+  target.setPermissionRequestHandler((_webContents, permission, callback) => callback(allowed(permission)));
+  target.setPermissionCheckHandler((_webContents, permission) => allowed(permission));
+}
+
+/**
  * Everything a window needs from the session — extensions, the adblock engine,
  * the persistent partition — is done once per process. Every window after the
  * first one starts from a session that is already warm.
@@ -3595,6 +3624,7 @@ function prepareSession() {
   if (sessionReady) return sessionReady;
   sessionReady = (async () => {
     ses = session.fromPartition(PARTITION);
+    guardPermissions(ses);
     // The empty tab is a local file that needs nothing from the session's
     // extensions: start it now, beside them, so a cold launch already has the
     // splash painted by the time the window builds its first tab.
