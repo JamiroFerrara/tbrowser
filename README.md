@@ -95,10 +95,11 @@ require them.
 | `Alt+O` / `Alt+I` | jump back / forward through tabs and pages |
 | `Alt+P` | open the session picker |
 | `Alt+S` / `Alt+Shift+S` | split side by side / stacked |
-| `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move between the two panes |
+| `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move to the pane that way |
+| `Ctrl+W` | close the pane, the tab stays (`:q`) |
+| `Ctrl+Shift+W` | kill the tab (`:bd`) |
 | `F12`, `Ctrl+Shift+I` | DevTools |
 | `Ctrl+N` | new window |
-| `Ctrl+Shift+W` | close window |
 | `Ctrl+Q` | quit |
 
 Vimium handles everything else inside the page (`f`, `j`, `o`, `?`, ...).
@@ -131,9 +132,11 @@ Everything is rebindable in `config.json` (created on first run):
     "splitVertical": ["alt+s"],
     "splitHorizontal": ["alt+shift+s"],
     "focusPane": ["alt+h", "alt+j", "alt+k", "alt+l"],
+    "closePane": ["ctrl+w"],
+    "closeTab": ["ctrl+shift+w"],
     "devtools": ["f12", "ctrl+shift+i"],
     "newWindow": ["ctrl+n"],
-    "closeWindow": ["ctrl+shift+w"],
+    "closeWindow": [],
     "quit": ["ctrl+q"]
   }
 }
@@ -141,7 +144,8 @@ Everything is rebindable in `config.json` (created on first run):
 
 Accelerators are `modifier+...+key` with `ctrl`, `alt`, `shift`, `meta`. Keys
 include `a`-`z`, `0`-`9`, `left`, `right`, `up`, `down`, `escape`, `enter`,
-`space`, `f1`-`f12`, and punctuation.
+`space`, `f1`-`f12`, and punctuation. An empty list unbinds the action:
+`closeWindow` ships unbound, so a browser window goes with `Ctrl+Q`.
 
 ## Command bar
 
@@ -195,7 +199,10 @@ Commands:
 | `:session kill <name>` | close every window attached to it and forget it |
 | `:tab <id>` | go to a tab of any window by the id the lists show |
 | `:tab copy <id>` | open that tab's page here as a second tab |
-| `:vsplit` / `:split` / `:only` | split side by side / stacked / back to one page |
+| `:vsplit` (`:vs`) / `:split` (`:sp`) | split side by side / stacked |
+| `:only` | close every other pane, keeping every tab |
+| `:q` (`:quit`, `:close`) | close the focused pane; the tab stays |
+| `:bd` (`:bdelete`) | kill the focused tab and the pane holding it |
 
 A `target=_blank` link opens in a new tab; a page asking for a sized popup —
 a sign-in — opens in a real window so the login can finish.
@@ -235,7 +242,7 @@ a session another window is already showing sees the same tabs — add a tab or
 switch it in one and the other follows.
 
 - **A window is a client.** It is attached to exactly one session; its tabs,
-  the focused one and any split belong to that session, not to the window. Two
+  the focused one and the panes belong to that session, not to the window. Two
   windows on one session show the same tabs, each with its own pages (a page
   lives in one window at a time), so a link opened on one side is on both.
 - **`Ctrl+1` … `Ctrl+9`** attach this window to the session in that place of the
@@ -258,29 +265,41 @@ switch it in one and the other follows.
 - **Renaming and attaching** from the settings page: a rename follows the
   session into its windows and keeps its place; a name another session holds is
   refused; **Attach** puts this window on that session.
-- **What is stored.** The tab addresses in order, the focused tab and any
-  split. Titles and scroll positions are not stored; the pages load again.
+- **What is stored.** The tab addresses in order, the focused tab and the pane
+  tree. Titles and scroll positions are not stored; the pages load again.
 - **Grouping is open.** A session is a flat list, so the same site can appear
   in two of them and twice in one.
 
 ## Splits
 
-`Alt+S` puts the current tab and the tab you were on before it side by side;
-`Alt+Shift+S` stacks them. Pressing the same key again closes the split,
-pressing the other turns it. `Alt+H`/`Alt+L` move between the two panes, and
-so do `Alt+J`/`Alt+K`; clicking a page focuses its pane. The command bar, the
-keys and the sidebar act on the focused pane, and the sidebar marks it.
+Splits work the way the editor's windows do: a pane is a window, a tab is the
+buffer it shows, and the two are separate things. `Alt+S` divides the pane the
+keys are in side by side, `Alt+Shift+S` stacks it; splitting again divides the
+focused half, so four panes are two splits of a split, not one flat grid.
+`Alt+H`/`Alt+J`/`Alt+K`/`Alt+L` move to the pane that way — straight ahead
+beats diagonal, so a move never lands the long way round — and clicking a page
+focuses its pane. The command bar, the keys and the sidebar act on the focused
+pane, and the sidebar marks it.
 
-The split appears in one step, both panes already at their final size: the
-pages reflow once and no frame is spent moving a divider across them. The two
-panes are ordinary tabs: both stay in the tab list and in the sidebar, and
-closing one leaves the other filling the window.
+The two close verbs are the editor's, and they are not the same key:
 
-- The page order is fixed (first tab left or top), so focusing a pane never
+- **`Ctrl+W`** is `:q`: it closes the pane and leaves the tab loaded. The tab
+  is still in the list and the sidebar, and reopening it costs nothing.
+- **`Ctrl+Shift+W`** is `:bd`: it kills the tab itself, and the pane that was
+  showing it goes with it.
+
+A pane opening shows the tab you were just on, as `:sp` shows the buffer you
+left beside the one you are in; a window holding a single tab opens a second,
+empty page to give it company. The panes appear in one step, all at their final
+size: the pages reflow once and no frame is spent moving a divider across them.
+
+- The pane order is fixed (first pane left or top), so focusing a pane never
   swaps the pictures.
-- A split with one tab creates a second, empty one to sit beside it.
-- The split is remembered in `state.json`, so a restored window opens with it.
-- `:only` closes it without closing either tab.
+- One pane is no split: closing down to it leaves the tab filling the window.
+- The arrangement is remembered in `state.json` and in the session, so a
+  restored window comes back with its panes; a file from the older two-pane
+  browser is read as the split it stood for.
+- `:only` closes every other pane and keeps every tab.
 
 ## New tab
 

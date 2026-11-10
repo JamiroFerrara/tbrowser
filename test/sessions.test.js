@@ -24,22 +24,51 @@ test('a session saved without a name takes the page it is on', () => {
   assert.equal(autoName([], 0), 'session');
 });
 
-test('a session keeps its tabs, its focused tab and its split', () => {
+test('a session keeps its tabs, its focused tab and its panes', () => {
   const dir = tempDir();
   const store = new Sessions(dir);
+  const panes = {
+    orientation: 'vertical',
+    children: [{ tab: 1 }, { orientation: 'horizontal', children: [{ tab: 2 }, { tab: 0 }] }],
+  };
   const saved = store.save('work', {
     tabs: ['https://github.com/', 'https://example.com/', 'https://news.ycombinator.com/'],
     activeTab: 1,
-    split: { a: 1, b: 2, orientation: 'horizontal' },
+    panes,
   });
   assert.equal(saved.name, 'work');
   assert.equal(saved.tabs.length, 3);
   assert.equal(saved.order, 1);
-  assert.deepEqual(saved.split, { a: 1, b: 2, orientation: 'horizontal' });
+  assert.deepEqual(saved.panes, panes);
 
   const reopened = new Sessions(dir);
   assert.deepEqual(reopened.get('WORK'), reopened.get('work'));
   assert.equal(reopened.get('work').activeTab, 1);
+  assert.deepEqual(reopened.get('work').panes, panes);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a split saved by the older two-pane browser is read as panes', () => {
+  const dir = tempDir();
+  fs.writeFileSync(
+    path.join(dir, 'sessions.json'),
+    JSON.stringify({
+      version: 2,
+      sessions: [
+        {
+          name: 'work',
+          tabs: ['https://github.com/', 'https://example.com/'],
+          activeTab: 1,
+          split: { a: 0, b: 1, orientation: 'horizontal' },
+        },
+      ],
+    }),
+  );
+  const store = new Sessions(dir);
+  assert.deepEqual(store.get('work').panes, {
+    orientation: 'horizontal',
+    children: [{ tab: 0 }, { tab: 1 }],
+  });
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -83,16 +112,27 @@ test('the order the sessions jump in moves with the arrows and is written down',
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('a session ignores pages it cannot reopen and a split that points nowhere', () => {
+test('a session ignores pages it cannot reopen and panes that point nowhere', () => {
   const dir = tempDir();
   const store = new Sessions(dir);
   const saved = store.save('work', {
     tabs: ['https://github.com/', 'javascript:alert(1)', 'not a url'],
-    split: { a: 0, b: 7, orientation: 'sideways' },
+    panes: { orientation: 'sideways', children: [{ tab: 0 }, { tab: 7 }] },
   });
   assert.deepEqual(saved.tabs, ['https://github.com/']);
-  assert.equal(saved.split, null);
+  assert.equal(saved.panes, null);
   assert.equal(saved.activeTab, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a tab cannot be on screen in two panes at once', () => {
+  const dir = tempDir();
+  const store = new Sessions(dir);
+  const saved = store.save('work', {
+    tabs: ['https://github.com/', 'https://example.com/'],
+    panes: { orientation: 'vertical', children: [{ tab: 0 }, { tab: 0 }] },
+  });
+  assert.equal(saved.panes, null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

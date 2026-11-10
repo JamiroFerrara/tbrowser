@@ -66,10 +66,13 @@ test('binding text parses comma-separated accelerators', () => {
   assert.deepEqual(parseBindingText(':'), { ok: true, list: [':'] });
 });
 
-test('binding text refuses an empty row and names what does not parse', () => {
-  assert.equal(parseBindingText('   ').ok, false);
-  assert.equal(parseBindingText('').ok, false);
+test('binding text refuses what does not parse', () => {
   const bad = parseBindingText('ctrl+l, bogus+x+y');
   assert.equal(bad.ok, false);
   assert.match(bad.error, /bogus\+x\+y/);
+});
+
+test('an empty row unbinds the action instead of failing the save', () => {
+  assert.deepEqual(parseBindingText('   '), { ok: true, list: [] });
+  assert.deepEqual(parseBindingText(''), { ok: true, list: [] });
 });

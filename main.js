@@ -26,8 +26,19 @@ const { Visits } = require('./lib/history');
 const { frecency } = require('./lib/frecency');
 const { PreloadPool } = require('./lib/preload');
 const { suggestions } = require('./lib/suggest');
-const { Sessions, normalizeName, autoName } = require('./lib/sessions');
-const { splitBounds, edgeBounds } = require('./lib/layout');
+const { Sessions, normalizeName, autoName, cleanLayout } = require('./lib/sessions');
+const {
+  isLeaf,
+  paneTabs,
+  showsTab,
+  replaceTab,
+  splitAt,
+  removeTab,
+  paneRects,
+  paneInDirection,
+  sameTree,
+  edgeBounds,
+} = require('./lib/layout');
 const { Jumps } = require('./lib/jumps');
 const { sharedTabs } = require('./lib/shared-tabs');
 
@@ -47,6 +58,14 @@ const PANE_EDGE = { dark: '#3a3a3a', light: '#d4d4d4' };
 const PANE_EDGE_ACTIVE = { dark: '#5b8def', light: '#5b8def' };
 const paneEdge = (active) =>
   (active ? PANE_EDGE_ACTIVE : PANE_EDGE)[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
+// The same arrangement, with every leaf renamed: tab ids to their places in
+// the tab list and back, when a state file changes hands.
+const mapPanes = (node, fn) =>
+  !node
+    ? null
+    : isLeaf(node)
+      ? { tab: fn(node.tab) }
+      : { orientation: node.orientation, children: node.children.map((child) => mapPanes(child, fn)) };
 const PARTITION = 'persist:tbrowser';
 // The new-tab page is a local file, not about:blank: Chromium paints a blank
 // document white whatever the theme, so the first thing a launch showed was a
@@ -797,9 +816,17 @@ class Browser {
     this.sidebarAttached = false;
     this.pageLayouts = 0;
 
-    // Two panes over one window: `a` and `b` are tab ids kept in a fixed
-    // order, so focusing the other one does not swap the pictures around.
-    this.split = null;
+    // The panes over one window, as the editor keeps its windows: a tree of
+    // splits whose leaves name the tab each pane shows, so a split inside a
+    // split nests. `null` is the ordinary window — one pane, the active tab,
+    // filling the page area.
+    this.panes = null;
+    // The rectangles the panes were last laid out in, so moving between them
+    // with the keys needs no fresh measurement.
+    this.panePlacement = null;
+    // The panes the keys have been in, newest last: closing one lands on the
+    // pane it came from, as `:q` does in the editor.
+    this.paneHistory = [];
     // The strips framing those panes, lit on the one with the keys; they
     // belong to a window, so a window that goes takes them with it.
     this.paneEdges = null;
@@ -940,9 +967,14 @@ class Browser {
     } else {
       this.sessionName = freshSessionName(savedTabs.length ? savedTabs : [HOME]);
     }
-    const startState = joined ?? { tabs: savedTabs, activeTab: this.saved.activeTab, split: this.saved.split };
+    const startState = joined ?? {
+      tabs: savedTabs,
+      activeTab: this.saved.activeTab,
+      panes: this.saved.panes,
+      split: this.saved.split,
+    };
     const startUrls = Array.isArray(startState.tabs) && startState.tabs.length ? startState.tabs : [HOME];
-    if (!joined) newSession(this.sessionName, { tabs: startUrls, activeTab: startState.activeTab, split: startState.split });
+    if (!joined) newSession(this.sessionName, { tabs: startUrls, activeTab: startState.activeTab, panes: startState.panes });
     // This window is a client of the session from here on.
     sessionFor(this)?.clients.add(this);
     // A launch builds its tabs without focusing them: the page's focus call
@@ -958,15 +990,7 @@ class Browser {
         this.activateTab(ids[startState.activeTab], { focus: false });
       }
     }
-    const savedSplit = startState.split;
-    if (savedSplit) {
-      const ids = [...this.tabs.keys()];
-      const a = ids[savedSplit.a];
-      const b = ids[savedSplit.b];
-      if (a !== undefined && b !== undefined && a !== b) {
-        this.attachSplit(a, b, savedSplit.orientation === 'horizontal' ? 'horizontal' : 'vertical');
-      }
-    }
+    this.refreshPanes(startState);
     this.saved = {};
     // The session now holds what this window opened, so a second client
     // attaching to it gets the same tabs.
@@ -1041,7 +1065,9 @@ class Browser {
     this.activeTabId = null;
     this.dropBackStep();
     clearTimeout(this.persistTimer);
-    this.split = null;
+    this.panes = null;
+    this.panePlacement = null;
+    this.paneHistory = [];
     this.paneEdges = null;
     this.previousTabId = null;
     this.sessionName = null;
@@ -1111,7 +1137,7 @@ class Browser {
       bounds: this.win && !this.win.isDestroyed() ? this.win.getBounds() : this.saved.bounds,
       tabs: state.tabs,
       activeTab: state.activeTab,
-      split: state.split,
+      panes: state.panes,
       session: this.sessionName,
       saved: Boolean(sessionFor(this)?.saved),
     };
@@ -1127,19 +1153,13 @@ class Browser {
       : tab.url || HOME;
   }
 
-  /** The window as a session: its tabs, the focused one, and any split. */
+  /** The window as a session: its tabs, the focused one, and the pane tree. */
   sessionState() {
     const ids = [...this.tabs.keys()];
     return {
       tabs: [...this.tabs.values()].map((tab) => this.urlOf(tab)),
       activeTab: Math.max(0, ids.indexOf(this.activeTabId)),
-      split: this.split
-        ? {
-            a: ids.indexOf(this.split.a),
-            b: ids.indexOf(this.split.b),
-            orientation: this.split.orientation,
-          }
-        : null,
+      panes: this.panes ? mapPanes(this.panes, (id) => ids.indexOf(id)) : null,
     };
   }
 
@@ -1192,19 +1212,11 @@ class Browser {
         const tab = this.tabs.get(id);
         if (this.urlOf(tab) !== urls[i]) this.loadInTab(tab, urls[i]);
       }
+      // The arrangement follows the session too: the same panes, each showing
+      // the tab in that place.
+      this.refreshPanes(state);
       const active = [...this.tabs.keys()][state.activeTab];
       if (active !== undefined && active !== this.activeTabId) this.activateTab(active, { focus: false });
-      const panes = [...this.tabs.keys()];
-      const split = state.split;
-      if (split && panes[split.a] !== undefined && panes[split.b] !== undefined && panes[split.a] !== panes[split.b]) {
-        const a = panes[split.a];
-        const b = panes[split.b];
-        if (!this.split || this.split.a !== a || this.split.b !== b || this.split.orientation !== split.orientation) {
-          this.attachSplit(a, b, split.orientation);
-        }
-      } else if (this.split) {
-        this.closeSplit();
-      }
     } finally {
       this.sessionSyncing = false;
     }
@@ -1231,25 +1243,22 @@ class Browser {
       place(this.sidebar, { x: 0, y: 0, width: SIDEBAR_WIDTH, height });
     }
     const tab = this.activeTab();
-    if (this.split) {
-      const a = this.tabs.get(this.split.a);
-      const b = this.tabs.get(this.split.b);
-      const va = a?.view;
-      const vb = b?.view;
-      if (va && vb) {
-        const [first, second] = splitBounds(
-          width,
-          contentHeight,
-          this.split.orientation,
-          SPLIT_GAP,
-          SPLIT_EDGE,
-        );
-        if (place(va, first)) this.pageLayouts += 1;
-        if (place(vb, second)) this.pageLayouts += 1;
-        this.placePaneEdges({ a: first, b: second });
+    if (this.panes) {
+      const rects = paneRects(this.panes, width, contentHeight, SPLIT_GAP, SPLIT_EDGE);
+      for (const [id, rect] of rects) {
+        const paneTab = this.tabs.get(id);
+        if (!paneTab) continue;
+        const view = this.attachTabView(paneTab);
+        if (view && place(view, rect)) this.pageLayouts += 1;
       }
-    } else if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
-      this.pageLayouts += 1;
+      this.panePlacement = rects;
+      this.ensurePaneEdges(rects.size);
+      this.placePaneEdges(rects);
+    } else {
+      this.panePlacement = null;
+      if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
+        this.pageLayouts += 1;
+      }
     }
     const chromeX = this.sidebarVisible ? SIDEBAR_WIDTH : 0;
     const chromeWidth = Math.max(0, width - chromeX);
@@ -1267,34 +1276,64 @@ class Browser {
   }
 
   // ------------------------------------------------------------------ panes
+  //
+  // The editor's two layers, kept apart: a pane is a window and a tab is the
+  // buffer it shows. The tree says how the window is divided, the tab list
+  // says what exists. Closing a pane takes its leaf out and leaves the tab
+  // loaded — `:q` — and killing a tab is the other verb, `:bd`.
 
-  /**
-   * The four strips that frame a pane, tmux's way of saying which one holds
-   * the keys. Plain views, not pages: an indicator costs no renderer, and the
-   * strips cover none of either page — the panes already leave that room.
-   */
-  buildPaneEdges() {
-    if (this.paneEdges) return this.paneEdges;
-    const edges = [];
-    for (const slot of ['a', 'b']) {
-      for (const side of ['top', 'bottom', 'left', 'right']) {
-        edges.push({ slot, side, view: new View() });
-      }
+  /** The tabs on screen, in layout order: the top-left one first. */
+  shownTabs() {
+    return this.panes ? paneTabs(this.panes) : this.activeTabId === null ? [] : [this.activeTabId];
+  }
+
+  /** Whether a tab has a pane of its own right now. */
+  inPane(id) {
+    return Boolean(this.panes) && showsTab(this.panes, id);
+  }
+
+  /** A tab's view in the window, added below the chrome on first use. */
+  attachTabView(tab) {
+    if (!tab) return null;
+    const view = this.tabView(tab);
+    if (!tab.attached && this.win) {
+      this.win.contentView.addChildView(view, 0);
+      tab.attached = true;
     }
-    this.paneEdges = edges;
-    return edges;
+    return view;
+  }
+
+  /** Take a tab off the screen without touching the tab or its page. */
+  detachTabView(tab) {
+    if (!tab?.view || !tab.attached) return;
+    try {
+      this.win.contentView.removeChildView(tab.view);
+    } catch {
+      // the window is already gone with the pane
+    }
+    tab.attached = false;
   }
 
   /**
-   * Put the frames in the window: above the pages, so they show, and below the
-   * chrome, so a sidebar or bar that floats over the split is not painted
-   * across. Called once per split — the frames are then left to `layout`.
+   * The strips that frame the panes, tmux's way of saying which one holds the
+   * keys. Plain views, not pages: an indicator costs no renderer, and the
+   * strips sit in the gaps the panes already leave.
    */
-  attachPaneEdges() {
+  ensurePaneEdges(count) {
+    if (this.paneEdges?.length === count * 4) return this.paneEdges;
+    this.detachPaneEdges();
+    const edges = [];
+    for (let pane = 0; pane < count; pane += 1) {
+      for (const side of ['top', 'bottom', 'left', 'right']) {
+        edges.push({ tab: null, side, view: new View() });
+      }
+    }
+    this.paneEdges = edges;
+    // Above the pages, so they show, and below the chrome, so a sidebar or
+    // bar that floats over the split is not painted across.
     const pages = [...this.tabs.values()].filter((tab) => tab.attached).length;
-    this.buildPaneEdges().forEach(({ view }, index) => {
-      this.win.contentView.addChildView(view, pages + index);
-    });
+    edges.forEach(({ view }, index) => this.win.contentView.addChildView(view, pages + index));
+    return edges;
   }
 
   detachPaneEdges() {
@@ -1308,133 +1347,196 @@ class Browser {
     this.paneEdges = null;
   }
 
-  /** Which of the two panes the keys and the bar act on. */
-  activePaneSlot() {
-    return this.split?.a === this.activeTabId ? 'a' : 'b';
-  }
-
-  /** Colour the frames: the pane with the keys in the accent, the other dim. */
+  /** Colour the frames: the pane with the keys in the accent, the rest dim. */
   paintPaneEdges() {
     if (!this.paneEdges) return;
     const active = paneEdge(true);
     const idle = paneEdge(false);
-    const slot = this.activePaneSlot();
-    for (const { slot: edgeSlot, view } of this.paneEdges) {
-      view.setBackgroundColor(edgeSlot === slot ? active : idle);
+    for (const edge of this.paneEdges) {
+      edge.view.setBackgroundColor(edge.tab === this.activeTabId ? active : idle);
     }
   }
 
-  /** Frame both panes where the split put them. */
+  /** Frame every pane where the tree put it. */
   placePaneEdges(rects) {
     if (!this.paneEdges) return;
-    for (const { slot, side, view } of this.paneEdges) {
-      view.setBounds(edgeBounds(rects[slot], side, SPLIT_EDGE));
+    const sides = ['top', 'bottom', 'left', 'right'];
+    let index = 0;
+    for (const [tab, rect] of rects) {
+      for (const side of sides) {
+        const edge = this.paneEdges[index];
+        index += 1;
+        if (!edge) break;
+        edge.tab = tab;
+        edge.view.setBounds(edgeBounds(rect, side, SPLIT_EDGE));
+      }
     }
     this.paintPaneEdges();
   }
 
   /**
-   * Two tabs over one window. `a` stays left (or top) and `b` right (or
-   * bottom) whatever the focus does, so switching between them never swaps
-   * the pictures; the focused one is simply the active tab.
+   * Alt+S / Alt+Shift+S, `:vsplit` / `:split`: divide the pane the keys are
+   * in. The new pane shows the tab focus came from, so a split puts the tab
+   * you left beside the tab you are in, as `:sp` does; a window holding one
+   * tab opens a second page to give it company.
    */
-  attachSplit(a, b, orientation) {
+  splitPane(orientation) {
     if (!this.win) return;
-    const first = this.tabs.get(a);
-    const second = this.tabs.get(b);
-    if (!first || !second || a === b) return;
-    const viewA = this.tabView(first);
-    const viewB = this.tabView(second);
-    this.split = { a, b, orientation };
-    // Electron refuses to add a view that is already a child, so only the
-    // pane that is not on screen yet is added.
-    if (!first.attached) {
-      this.win.contentView.addChildView(viewA, 0);
-      first.attached = true;
-    }
-    if (!second.attached) {
-      this.win.contentView.addChildView(viewB, 0);
-      second.attached = true;
-    }
-    this.attachPaneEdges();
-    this.layout();
-    updateSidebars();
-    this.persistTabs();
-  }
-
-  /** Alt+S / Alt+Shift+S: open a split, turn it, or close it. */
-  toggleSplit(orientation) {
-    if (!this.win) return;
-    if (this.split) {
-      if (this.split.orientation === orientation) {
-        this.closeSplit();
-        return;
-      }
-      this.split.orientation = orientation;
-      this.layout();
-      this.persistTabs();
-      return;
-    }
     const active = this.activeTab();
     if (!active) return;
+    const shown = this.shownTabs();
     let partner =
-      this.previousTabId != null && this.previousTabId !== active.id
+      this.previousTabId != null && this.previousTabId !== active.id && !shown.includes(this.previousTabId)
         ? this.tabs.get(this.previousTabId)
         : null;
-    if (!partner) partner = [...this.tabs.values()].find((tab) => tab.id !== active.id) ?? null;
-    // One tab has nothing to pair with, so the split asks for a second page.
-    if (!partner) partner = this.createTab({ activate: false });
-    this.attachSplit(active.id, partner.id, orientation);
-    // Splitting is a move into the pane just made, the way tmux hands the
-    // cursor to the shell a split opens: the keys land where the split did.
-    this.setActivePane(partner.id);
-  }
-
-  /** Close the split, keeping both tabs: the focused one fills the window. */
-  closeSplit() {
-    if (!this.split) return;
-    const otherId = this.activeTabId === this.split.a ? this.split.b : this.split.a;
-    const other = this.tabs.get(otherId);
-    if (other?.view && other.attached) {
-      try {
-        this.win.contentView.removeChildView(other.view);
-      } catch {
-        // the view is already gone with the window
-      }
-      other.attached = false;
+    if (!partner) {
+      partner = [...this.tabs.values()].find((tab) => tab.id !== active.id && !shown.includes(tab.id)) ?? null;
     }
-    this.split = null;
-    this.detachPaneEdges();
+    if (!partner) partner = this.createTab({ activate: false });
+    this.panes = splitAt(this.panes, active.id, partner.id, orientation);
+    this.attachTabView(this.tabs.get(active.id));
+    this.attachTabView(partner);
     this.layout();
     updateSidebars();
     this.persistTabs();
+    // Splitting is a move into the pane just made, the way tmux hands the
+    // cursor to the shell a split opens: the keys land where the split did.
+    this.focusPane(partner.id);
   }
 
   /**
-   * Focus the other pane without moving it. Electron lets the click do this
-   * on its own (`wireTab` listens for focus), and Alt+H/J/K/L do it from the
-   * keyboard.
+   * Alt+H/J/K/L: move to the pane that way. Straight ahead wins over diagonal,
+   * so a move never lands on the pane the long way round.
    */
-  setActivePane(id, { focus = true } = {}) {
-    if (!this.split || id === this.activeTabId) return;
-    if (id !== this.split.a && id !== this.split.b) return;
+  movePane(direction) {
+    if (!this.panes || !this.panePlacement) return false;
+    const next = paneInDirection(this.panePlacement, this.activeTabId, direction);
+    if (next === null || next === undefined) return false;
+    this.focusPane(next);
+    return true;
+  }
+
+  /** Put the keys in a pane that is already on screen. */
+  focusPane(id, { focus = true } = {}) {
+    if (!this.panes || !showsTab(this.panes, id)) return;
     const tab = this.tabs.get(id);
     if (!tab) return;
-    this.previousTabId = this.activeTabId;
-    this.activeTabId = id;
+    const moved = id !== this.activeTabId;
+    if (moved) {
+      this.previousTabId = this.activeTabId;
+      this.activeTabId = id;
+      this.paneHistory.push(id);
+      if (this.paneHistory.length > 32) this.paneHistory.shift();
+    }
     const view = this.tabView(tab);
     if (focus) view.webContents.focus();
     this.paintPaneEdges();
-    this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
+    if (this.win) this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
     updateSidebars();
-    this.persistTabs();
-    this.recordJump();
+    if (moved) {
+      this.persistTabs();
+      this.recordJump();
+    }
   }
 
-  /** Swap every tab for a saved set in one step, split included. */
+  /**
+   * Take a tab's pane out of the arrangement and hand back the panes still on
+   * screen. One pane left is no split at all, so the tree goes and that pane
+   * fills the window.
+   */
+  removePaneFor(tabId) {
+    const left = removeTab(this.panes, tabId);
+    const remaining = left ? paneTabs(left) : [];
+    this.panes = remaining.length > 1 ? left : null;
+    this.panePlacement = null;
+    this.detachPaneEdges();
+    return remaining;
+  }
+
+  /** The pane focus lands on when one closes: the one it came from. */
+  paneAfterClose(closing) {
+    const remaining = this.shownTabs();
+    for (let index = this.paneHistory.length - 1; index >= 0; index -= 1) {
+      const candidate = this.paneHistory[index];
+      if (candidate !== closing && remaining.includes(candidate)) return candidate;
+    }
+    return remaining[0] ?? null;
+  }
+
+  /**
+   * Ctrl+W, `:q`: close the pane the keys are in. The tab stays — it is a
+   * buffer, and closing the window that showed it does not delete it — so it
+   * is still in the tab list and comes back with a split or a click.
+   */
+  closePane() {
+    if (!this.panes || !this.win || this.activeTabId === null) return false;
+    const closing = this.activeTabId;
+    const tab = this.tabs.get(closing);
+    if (!tab || !showsTab(this.panes, closing)) return false;
+    const remaining = this.removePaneFor(closing);
+    this.detachTabView(tab);
+    if (!this.panes) {
+      // No split left: the tab that shared it fills the window.
+      this.activeTabId = remaining[0] ?? closing;
+      this.attachTabView(this.tabs.get(this.activeTabId));
+    } else {
+      this.activeTabId = null;
+      this.focusPane(this.paneAfterClose(closing));
+    }
+    this.layout();
+    updateSidebars();
+    this.persistTabs();
+    return true;
+  }
+
+  /** `:only`: every pane but this one closes. All the tabs stay. */
+  closePanesExcept() {
+    if (!this.panes || !this.win) return false;
+    const keep = this.activeTabId;
+    if (keep === null) return false;
+    const closing = this.shownTabs().filter((id) => id !== keep);
+    if (!closing.length) return false;
+    this.panes = null;
+    this.panePlacement = null;
+    this.detachPaneEdges();
+    for (const id of closing) this.detachTabView(this.tabs.get(id));
+    this.attachTabView(this.tabs.get(keep));
+    this.layout();
+    updateSidebars();
+    this.persistTabs();
+    return true;
+  }
+
+  /**
+   * Follow a saved arrangement: a session's pane tree or this window's own,
+   * from either shape the files have ever held.
+   */
+  refreshPanes(state) {
+    if (!this.win) return;
+    const ids = [...this.tabs.keys()];
+    const saved = cleanLayout(state, ids.length);
+    const wanted = saved ? mapPanes(saved, (index) => ids[index]) : null;
+    const shown = wanted ? paneTabs(wanted) : [];
+    // One pane is no split at all: the ordinary window already shows the tab.
+    const next = shown.length > 1 ? wanted : null;
+    if (sameTree(this.panes, next)) return;
+    const before = this.shownTabs();
+    this.panes = next;
+    this.panePlacement = null;
+    this.detachPaneEdges();
+    for (const id of before) if (!this.inPane(id)) this.detachTabView(this.tabs.get(id));
+    if (next && !this.inPane(this.activeTabId)) this.activeTabId = paneTabs(next)[0];
+    this.layout();
+    updateSidebars();
+    this.persistTabs();
+  }
+
+  /** Swap every tab for a saved set in one step, panes included. */
   replaceTabs(state) {
     if (!this.win) return;
-    this.split = null;
+    this.panes = null;
+    this.panePlacement = null;
+    this.paneHistory = [];
     this.detachPaneEdges();
     for (const tab of this.tabs.values()) {
       if (!tab.view) continue;
@@ -1462,14 +1564,7 @@ class Browser {
     });
     const active = ids[Number.isInteger(state.activeTab) ? state.activeTab : 0] ?? ids[0];
     this.activateTab(active);
-    const split = state.split;
-    if (split) {
-      const a = ids[split.a];
-      const b = ids[split.b];
-      if (a !== undefined && b !== undefined && a !== b) {
-        this.attachSplit(a, b, split.orientation === 'horizontal' ? 'horizontal' : 'vertical');
-      }
-    }
+    this.refreshPanes(state);
     updateSidebars();
     this.persistTabs();
   }
@@ -2023,7 +2118,7 @@ class Browser {
     // Clicking a page is how a split changes which pane the bar and the keys
     // act on. Outside a split this event has nothing to say.
     wc.on('focus', () => {
-      if (this.split && tab.id !== this.activeTabId) this.setActivePane(tab.id, { focus: false });
+      if (this.inPane(tab.id) && tab.id !== this.activeTabId) this.focusPane(tab.id, { focus: false });
     });
     this.watchKeys(wc);
   }
@@ -2080,28 +2175,25 @@ class Browser {
     if (!tab || !this.win) return;
     // A tab already on screen in one of the panes is just a focus move: it
     // must not be detached and re-added, or the split would collapse.
-    if (this.split && (id === this.split.a || id === this.split.b)) {
-      this.setActivePane(id, { focus });
+    if (this.inPane(id)) {
+      this.focusPane(id, { focus });
       return;
     }
     const previous = this.activeTab();
-    if (this.split) {
-      // Change the page in the focused pane; the other pane keeps its own.
-      const slot = previous && previous.id === this.split.a ? 'a' : 'b';
-      if (previous && previous.id !== id && previous.view) {
-        this.win.contentView.removeChildView(previous.view);
-        previous.attached = false;
+    if (this.panes) {
+      // `:b <tab>`: the focused pane changes the buffer it shows; the other
+      // panes keep theirs, and the tab that leaves stays in the list.
+      if (previous) {
+        this.panes = replaceTab(this.panes, previous.id, id);
+        this.detachTabView(previous);
       }
       this.previousTabId = previous?.id ?? null;
-      this.split[slot] = id;
       this.activeTabId = id;
-      const view = this.tabView(tab);
-      if (!tab.attached) {
-        this.win.contentView.addChildView(view, 0);
-        tab.attached = true;
-      }
+      this.paneHistory.push(id);
+      if (this.paneHistory.length > 32) this.paneHistory.shift();
+      const view = this.attachTabView(tab);
       this.layout();
-      if (focus) view.webContents.focus();
+      if (focus) view?.webContents.focus();
       this.win.setTitle(tab.title ? `${tab.title} — tbrowser` : 'tbrowser');
       updateSidebars();
       this.persistTabs();
@@ -2129,11 +2221,16 @@ class Browser {
     this.recordJump();
   }
 
+  /**
+   * Ctrl+Shift+W, `:bd`: kill the tab. The pane that showed it closes with it,
+   * the way `:bd` shuts the window that was showing the buffer — and when no
+   * pane is left the next tab takes the window, since a tab list with tabs in
+   * it always has one on screen.
+   */
   closeTab(id) {
     const tab = this.tabs.get(id);
     if (!tab) return;
-    const inSplit = this.split && (id === this.split.a || id === this.split.b);
-    const otherId = inSplit ? (this.split.a === id ? this.split.b : this.split.a) : null;
+    const wasPane = this.inPane(id);
     this.tabs.delete(id);
     // The step back was this tab's: another tab has no history for it.
     if (this.backStep?.tabId === id) this.dropBackStep();
@@ -2163,19 +2260,22 @@ class Browser {
     }
     // The pages the tab kept for back and forward went with it.
     this.closeSteps(tab);
-    if (inSplit) {
-      // One pane is left, so the split goes with the tab; the surviving pane
-      // fills the window.
-      this.split = null;
-      this.detachPaneEdges();
-      if (this.activeTabId === id) {
+    if (wasPane) {
+      const remaining = this.removePaneFor(id);
+      if (!this.panes) {
+        // No split is left: whatever tab took its place fills the window.
         this.activeTabId = null;
-        if (otherId !== null && this.tabs.has(otherId)) {
-          this.activateTab(otherId);
-          this.layout();
-          this.persistTabs();
+        const next = remaining[0] ?? [...this.tabs.keys()].pop();
+        if (next === undefined) {
+          this.win.close();
           return;
         }
+        this.activateTab(next);
+        return;
+      }
+      if (this.activeTabId === id) {
+        this.activeTabId = null;
+        this.focusPane(this.paneAfterClose(id), { focus: false });
       }
       this.layout();
     }
@@ -2280,22 +2380,28 @@ class Browser {
       return true;
     }
     if (matchesAny(input, keys.splitVertical)) {
-      this.toggleSplit('vertical');
+      this.splitPane('vertical');
       return true;
     }
     if (matchesAny(input, keys.splitHorizontal)) {
-      this.toggleSplit('horizontal');
+      this.splitPane('horizontal');
       return true;
     }
-    // Alt+H/J/K/L move between the panes, the way they move between tmux
+    // Alt+H/J/K/L move to the pane that way, the way they move between tmux
     // panes in the editor; with no split they belong to the page.
-    if (this.split && keys.focusPane?.length && matchesAny(input, keys.focusPane)) {
+    if (this.panes && keys.focusPane?.length && matchesAny(input, keys.focusPane)) {
       const key = String(input.key).toLowerCase();
-      const toB = ['l', 'right', 'j', 'down'].includes(key);
-      const toA = ['h', 'left', 'k', 'up'].includes(key);
-      this.setActivePane(
-        toB ? this.split.b : toA ? this.split.a : this.activeTabId === this.split.a ? this.split.b : this.split.a,
-      );
+      const direction = {
+        h: 'left',
+        left: 'left',
+        j: 'down',
+        down: 'down',
+        k: 'up',
+        up: 'up',
+        l: 'right',
+        right: 'right',
+      }[key];
+      if (direction) this.movePane(direction);
       return true;
     }
     // Alt+1..8 are the tab in that position, Alt+9 the last one; Ctrl+1..9
@@ -2342,6 +2448,12 @@ class Browser {
       this.createTab({ openBar: true });
       return true;
     }
+    // Ctrl+W is the editor's `:q`: it takes the pane away and leaves the tab.
+    if (keys.closePane?.length && matchesAny(input, keys.closePane)) {
+      this.closePane();
+      return true;
+    }
+    // Ctrl+Shift+W is `:bd`: the tab itself goes, and its pane with it.
     if (matchesAny(input, keys.closeTab)) {
       if (this.activeTab()) this.closeTab(this.activeTabId);
       return true;
@@ -2472,12 +2584,12 @@ function liveSession(name) {
 }
 
 /** A session in memory: the tabs it holds and the windows showing it. */
-function newSession(name, { tabs = [HOME], activeTab = 0, split = null, saved = false } = {}) {
+function newSession(name, { tabs = [HOME], activeTab = 0, panes = null, saved = false } = {}) {
   const entry = {
     name,
     tabs: Array.isArray(tabs) && tabs.length ? tabs : [HOME],
     activeTab: Number.isInteger(activeTab) ? activeTab : 0,
-    split: split ?? null,
+    panes: panes ?? null,
     saved: Boolean(saved),
     savedAt: saved ? Date.now() : null,
     clients: new Set(),
@@ -2547,7 +2659,7 @@ function publishSession(window) {
   const state = window.sessionState();
   session.tabs = state.tabs;
   session.activeTab = state.activeTab;
-  session.split = state.split;
+  session.panes = state.panes;
   session.savedAt = Date.now();
   if (session.saved) sessions?.save(session.name, state);
   for (const client of session.clients) {
@@ -2912,16 +3024,32 @@ function runCommand(window, command) {
       return revealTab(id, window);
     }
     case 'vsplit':
+    case 'vs':
       window.hideBar();
-      window.toggleSplit('vertical');
+      window.splitPane('vertical');
       return null;
     case 'split':
+    case 'sp':
       window.hideBar();
-      window.toggleSplit('horizontal');
+      window.splitPane('horizontal');
       return null;
     case 'only':
       window.hideBar();
-      window.closeSplit();
+      window.closePanesExcept();
+      return null;
+    // The editor's two ways of undoing a pane: `:q` closes the window and
+    // keeps the buffer, `:bd` ends the buffer and closes its window.
+    case 'q':
+    case 'quit':
+    case 'close':
+      window.hideBar();
+      if (!window.closePane()) return 'no split to close';
+      return null;
+    case 'bd':
+    case 'bdelete':
+    case 'bwipeout':
+      window.hideBar();
+      if (window.activeTabId != null) window.closeTab(window.activeTabId);
       return null;
     default:
       return NOT_A_COMMAND;
