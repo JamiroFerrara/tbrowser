@@ -113,6 +113,16 @@ test('binding text parses comma-separated accelerators', () => {
   assert.deepEqual(parseBindingText(':'), { ok: true, list: [':'] });
 });
 
+test('a binding whose key is the comma survives the settings form', () => {
+  // The settings row joins with ", ", so the row for ctrl+, reads "ctrl+,".
+  assert.deepEqual(parseBindingText('ctrl+,'), { ok: true, list: ['ctrl+,'] });
+  assert.deepEqual(parseBindingText('ctrl+, '), { ok: true, list: ['ctrl+,'] });
+  assert.equal(parseBindingText(', ctrl+k').ok, false);
+  assert.deepEqual(parseBindingText('ctrl+,, ctrl+k'), { ok: true, list: ['ctrl+,', 'ctrl+k'] });
+  assert.deepEqual(parseBindingText(','), { ok: true, list: [','] });
+  assert.deepEqual(parseBindingText('ctrl+l, ctrl+k'), { ok: true, list: ['ctrl+l', 'ctrl+k'] });
+});
+
 test('binding text refuses what does not parse', () => {
   const bad = parseBindingText('ctrl+l, bogus+x+y');
   assert.equal(bad.ok, false);
