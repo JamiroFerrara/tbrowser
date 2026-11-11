@@ -4078,34 +4078,7 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
-    return showWindow({ restore: true }).then((window) => {
-      if (!process.env.BAR_SMOKE || !NO_UI) return window;
-      const w = window;
-      const dump = (label) => {
-        const [width, height] = w.win.getContentSize();
-        const active = w.activeTabId;
-        console.log(`SMOKE ${label} win ${width}x${height} active=${active}`);
-        for (const [id, rect] of w.panePlacement ?? []) {
-          const bounds = w.tabView(w.tabs.get(id))?.getBounds();
-          console.log(`SMOKE ${label} pane ${id} rect=${JSON.stringify(rect)} view=${JSON.stringify(bounds)}`);
-        }
-        console.log(`SMOKE ${label} bar=${JSON.stringify(w.barVisible ? w.bar.getBounds() : null)}`);
-      };
-      setTimeout(() => {
-        dump('nobar');
-        w.splitPane('vertical');
-        setTimeout(() => {
-          dump('address');
-          w.barHeight = BAR_HEIGHT + 3 * BAR_ROW + BAR_PAD;
-          w.layout();
-          setTimeout(() => {
-            dump('list');
-            app.quit();
-          }, 300);
-        }, 500);
-      }, 1500);
-      return w;
-    });
+    return showWindow({ restore: true });
   });
 }
 
