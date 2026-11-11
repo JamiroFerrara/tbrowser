@@ -1667,6 +1667,7 @@ class Browser {
    * command, and text that names no command is searched.
    */
   showBar(mode = 'address') {
+    console.log('[debug] showBar', mode, new Error().stack.split('\n').slice(1,6).join(' | '));
     if (!this.barLoaded) {
       this.pendingBar = mode;
       return;
@@ -1692,6 +1693,7 @@ class Browser {
   }
 
   hideBar({ focusPage = true } = {}) {
+    console.log('[debug] hideBar', focusPage, this.barVisible);
     if (!this.barVisible) return;
     this.barVisible = false;
     this.barListOpen = false;
