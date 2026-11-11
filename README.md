@@ -414,12 +414,17 @@ own history step reloads. The window keeps the page the tab just left loaded
 beside it, so the step back onto it is a view swap — no load, no network, and
 the same for `Alt+Left` / `Alt+Right`. One page is kept, for the tab on screen.
 
-Scrolling (`j`, `k`, `d`, `u`, `gg`, `G`) runs at one speed for the first 60% of
-the distance and then decelerates into the destination. Upstream Vimium's plain
-animation stops dead at the end, and Chromium's own smooth scroll answers a key
-late enough to feel laggy; the fork keeps the first frame at the old speed, so
-the key is answered at once, and spends the rest of the scroll easing off.
-Vimium's `smoothScroll` setting still turns the animation off.
+Scrolling (`j`, `k`, `d`, `u`, `gg`, `G`) is stock Vimium's: one constant speed
+for the whole press, the distance covered in `max(100, 20 * ln(distance))` ms.
+Chromium's own smooth scroll was measured slower and later (2–3 px on its first
+frame, 281 ms for 270 px) and an easing curve of the fork's own made repeated
+keys stutter, so the fork keeps upstream's animation and only answers the first
+frame one frame earlier. Vimium's `smoothScroll` setting still turns the
+animation off.
+
+Chromium's wheel animation is switched off (`--disable-smooth-scrolling`), so a
+wheel notch moves the page by its whole distance on the next frame instead of
+gliding on for ~180 ms after the wheel has stopped.
 
 One collision is left by design: a key bound in `config.json` is taken before
 the page sees it, so a Vimium mapping on the same key never fires. `Ctrl+P` is

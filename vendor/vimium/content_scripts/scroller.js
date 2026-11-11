@@ -175,9 +175,11 @@ const checkVisibility = function (element) {
   }
 };
 
-// A smooth scroll is Chromium's own, animated on the compositor thread: it keeps the page's frame
-// rate whatever the page's own scripts are doing. The requestAnimationFrame loop this replaces ran
-// on the page's main thread, and stepped exactly when a heavy page was working.
+// The animation is stock Vimium's: one constant speed per press, `amount` covered over
+// `duration`, and it stops on the distance asked for. Chromium's own `behavior: "smooth"` was
+// tried in its place and measured slower and later (2-3 px on its first frame, 281 ms for
+// 270 px), and its curve is not ours to set; an easing curve of our own was tried too, and its
+// velocity jumped on every repeated key, which is what read as choppy.
 
 // CoreScroller contains the core function (scroll) and logic for relative scrolls. All scrolls are
 // ultimately translated to relative scrolls. CoreScroller is not exported.
@@ -264,11 +266,9 @@ const CoreScroller = {
     const sign = getSign(amount);
     amount = Math.abs(amount);
 
-    // Initial intended scroll duration (in ms). The glide starts at the speed the plain animation
-    // had, so the key answer is unchanged, and spends the rest of its time easing off: 25 * ln is
-    // that speed stretched over the deceleration below. Capped, because a scroll the eye has to
-    // wait out reads as lag.
-    const duration = Math.min(240, Math.max(130, 25 * Math.log(amount)));
+    // Initial intended scroll duration (in ms). Stock Vimium's: 20 * ln grows with the distance,
+    // 100 ms is the floor. `G` down a very long page lands in about a sixth of a second.
+    const duration = Math.max(100, 20 * Math.log(amount));
 
     let totalDelta = 0;
     let totalElapsed = 0.0;
@@ -308,22 +308,11 @@ const CoreScroller = {
         }
       }
 
-      // Calculate the initial delta, rounding up to ensure progress. Then, adjust delta to account
-      // for the current scroll state. A tap runs at one speed for the first 60% of its distance and
-      // then decelerates into the destination: the same instant answer the plain jump gave, without
-      // the dead stop at the end. A key held down keeps the steady speed the calibration tunes.
-      let delta;
-      if (myKeyIsStillDown()) {
-        delta = Math.ceil(amount * (elapsed / duration) * calibration);
-      } else {
-        const progress = Math.min(1, totalElapsed / duration);
-        // The integral of "full speed until 60%, then a straight ramp down", normalised so the
-        // whole distance is covered by the end: 1.25 * u early, 1 - 1.5625 * (1 - u)^2 later.
-        const eased = progress < 0.6
-          ? 1.25 * progress
-          : 1 - 1.5625 * (1 - progress) * (1 - progress);
-        delta = Math.max(0, Math.min(Math.ceil(amount * eased) - totalDelta, amount - totalDelta));
-      }
+      // One constant speed for the whole press: `amount` covered over `duration`, rounded up so
+      // every frame makes progress, and clamped for a tap so the press lands exactly on its
+      // distance. A key held down keeps this speed, tuned by the calibration above.
+      let delta = Math.ceil(amount * (elapsed / duration) * calibration);
+      delta = myKeyIsStillDown() ? delta : Math.max(0, Math.min(delta, amount - totalDelta));
 
       if (delta && performScroll(element, direction, sign * delta)) {
         totalDelta += delta;

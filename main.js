@@ -182,6 +182,11 @@ function paintAccent(win) {
     return false;
   }
 }
+// A wheel notch is answered on the next frame, by the whole distance. Left to itself Chromium
+// glides a notch for ~180 ms, so the page keeps drifting after the wheel has stopped and lands
+// past the line it was aimed at. Vimium animates its own keys, so this only takes the glide out
+// of the wheel.
+app.commandLine.appendSwitch('disable-smooth-scrolling');
 // `--no-ui` is the test launch: the window is built exactly as a real one and
 // never put on screen, so a run that only needs the browser up — a smoke test,
 // or an agent checking a change while the user works — takes no focus and
