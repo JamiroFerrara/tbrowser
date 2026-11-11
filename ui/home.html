@@ -59,20 +59,6 @@
     line-height: 1;
     white-space: pre;
     text-align: left;
-    /* A CRT holds a frame for a while and then loses it for a blink: nothing
-       moves, nothing repaints, and opacity is the one property the compositor
-       animates for free. `steps(1, end)` keeps every dip a cut, not a fade. */
-    animation: flicker 9s steps(1, end) infinite;
-  }
-  @keyframes flicker {
-    0%, 92.5%, 100% { opacity: 1; }
-    93% { opacity: 0.45; }
-    93.8% { opacity: 1; }
-    95.4% { opacity: 0.68; }
-    96.2% { opacity: 1; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    #art { animation: none; }
   }
 </style>
 </head>

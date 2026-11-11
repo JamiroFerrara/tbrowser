@@ -343,6 +343,7 @@ function watchViewKeys(webContents) {
   webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return;
     const owner = viewOwners.get(webContents.id);
+    console.log('[debug] input', webContents.id, input.type, input.key, input.control, input.shift, Boolean(owner));
     if (owner && owner.pressShortcut(input)) event.preventDefault();
   });
 }
