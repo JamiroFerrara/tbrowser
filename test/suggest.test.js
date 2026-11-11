@@ -245,3 +245,31 @@ test('a session picker lists the sessions and a way to save this one', () => {
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0].value, ':session open work');
 });
+
+
+test('search results pages are not offered as places', () => {
+  const visits = [
+    { url: 'https://www.google.com/search?q=node+test', title: 'node test - Google Search', visits: [NOW] },
+    { url: 'https://duckduckgo.com/?q=node+test', title: 'node test at DuckDuckGo', visits: [NOW] },
+    { url: 'https://www.bing.com/search?q=node+test', title: 'node test - Bing', visits: [NOW] },
+    { url: 'https://news.ycombinator.com/', title: 'Hacker News', visits: [NOW] },
+  ];
+  const rows = suggestions('', { history: visits, searchUrl: SEARCH, now: NOW });
+  assert.deepEqual(
+    rows.map((row) => row.title),
+    ['Hacker News'],
+  );
+
+  // A page whose address merely contains a `q` stays: only the engines' own
+  // result paths are queries, everything else is a place.
+  const sites = [
+    { url: 'https://shop.example.com/search?q=node', title: 'Node goods', visits: [NOW] },
+    { url: 'https://www.google.com/', title: 'Google', visits: [NOW] },
+    { url: 'https://duckduckgo.com/', title: 'DuckDuckGo', visits: [NOW] },
+  ];
+  const kept = suggestions('', { history: sites, searchUrl: SEARCH, now: NOW });
+  assert.deepEqual(
+    kept.map((row) => row.title).sort(),
+    ['DuckDuckGo', 'Google', 'Node goods'],
+  );
+});
