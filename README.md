@@ -336,8 +336,8 @@ shear it — over one Matrix quote, picked at random from the same list,
 centered in the window in the editor's face and catppuccin blue.
 
 It is sized off the window on both axes, so even the smallest window the
-browser opens still fits all of it above the quote. The drawing is still: no
-flicker, nothing moves under it while a splash is open.
+browser opens still fits all of it above the quote. The drawing is still:
+nothing moves over the quote while a splash is open.
 
 The bar is up and focused on every launch and every new tab, so the first thing
 you type is a search without reaching for a key first.
