@@ -92,7 +92,8 @@ require them.
 | `Ctrl+1` … `Ctrl+9` | attach this window to the session in that place of the order |
 | `Ctrl+R`, `F5` | reload |
 | `Alt+Left` / `Alt+Right` | back / forward on this page |
-| `Alt+O` / `Alt+I` | jump back / forward through tabs and pages |
+| `Ctrl+O` / `Ctrl+I` | jump back / forward through tabs and pages |
+| `Alt+O` / `Alt+I` | the same two jumps, for the older habit |
 | `Alt+P` | open the session picker |
 | `Alt+S` / `Alt+Shift+S` | split side by side / stacked |
 | `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move to the pane that way |
@@ -128,8 +129,8 @@ Everything is rebindable in `config.json` (created on first run):
     "reload": ["ctrl+r", "f5"],
     "back": ["alt+left"],
     "forward": ["alt+right"],
-    "jumpBack": ["alt+o"],
-    "jumpForward": ["alt+i"],
+    "jumpBack": ["ctrl+o", "alt+o"],
+    "jumpForward": ["ctrl+i", "alt+i"],
     "workspaces": ["alt+p"],
     "splitVertical": ["alt+s"],
     "splitHorizontal": ["alt+shift+s"],

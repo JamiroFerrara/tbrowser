@@ -76,6 +76,27 @@ test('preloading is on by default and only a boolean changes it', () => {
   assert.equal(normalize({ preload: 'yes' }).preload, true);
 });
 
+test('the jump list answers to ctrl+o and ctrl+i', () => {
+  const bindings = normalize({}).keybindings;
+  assert.equal(matches(key({ key: 'o', control: true }), bindings.jumpBack), true);
+  assert.equal(matches(key({ key: 'i', control: true }), bindings.jumpForward), true);
+  // The keys the older build bound still work, and nothing else sneaks in.
+  assert.equal(matches(key({ key: 'o', alt: true }), bindings.jumpBack), true);
+  assert.equal(matches(key({ key: 'i', alt: true }), bindings.jumpForward), true);
+  assert.equal(matches(key({ key: 'o', control: true, shift: true }), bindings.jumpBack), false);
+  assert.equal(matches(key({ key: 'o' }), bindings.jumpBack), false);
+});
+
+test('a config still holding the old jump keys moves to the new ones', () => {
+  const config = normalize({ keybindings: { jumpBack: ['alt+o'], jumpForward: ['alt+i'] } });
+  assert.deepEqual(config.keybindings.jumpBack, ['ctrl+o', 'alt+o']);
+  assert.deepEqual(config.keybindings.jumpForward, ['ctrl+i', 'alt+i']);
+  // A list the user picked is their own, even when it drops a default key.
+  const custom = normalize({ keybindings: { jumpBack: ['alt+o', 'alt+b'] } });
+  assert.deepEqual(custom.keybindings.jumpBack, ['alt+o', 'alt+b']);
+  assert.deepEqual(custom.keybindings.jumpForward, ['ctrl+i', 'alt+i']);
+});
+
 test('ctrl+comma ships bound to the settings page', () => {
   assert.deepEqual(normalize({}).keybindings.settings, ['ctrl+,']);
   // The comma arrives with a modifier of its own and no shift, so the binding

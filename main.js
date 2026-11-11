@@ -880,7 +880,7 @@ class Browser {
     this.barMode = 'address';
     // The tab a split pairs with, and the tab focus came from.
     this.previousTabId = null;
-    // Every tab and page the keys have taken this window to, so Alt+O/Alt+I
+    // Every tab and page the keys have taken this window to, so Ctrl+O/Ctrl+I
     // walk back and forward through them the way C-o/C-i do in the editor.
     this.jumps = new Jumps();
     // A jump is being restored: the activation and load it causes are the
@@ -1282,6 +1282,10 @@ class Browser {
     if (!this.win) return;
     const [width, height] = this.win.getContentSize();
     const barPixels = this.barVisible ? Math.round(this.barHeight) : 0;
+    // With no split the bar is the window's own bottom strip and every page
+    // stops above it. A split has a bottom edge per pane, so the bar is the
+    // active pane's strip: the command line and its list open where the keys
+    // are, and the pane beside the search keeps its full height.
     const contentHeight = Math.max(0, height - barPixels);
 
     // The page always gets the whole window: the sidebar sits over it, so
@@ -1291,13 +1295,31 @@ class Browser {
       place(this.sidebar, { x: 0, y: 0, width: SIDEBAR_WIDTH, height });
     }
     const tab = this.activeTab();
+    let barRect = null;
     if (this.panes) {
-      const rects = paneRects(this.panes, width, contentHeight, SPLIT_GAP, SPLIT_EDGE);
+      // The tree is laid out over the whole window: the bar is inside a pane,
+      // so it takes that pane's strip instead of shortening every one of them.
+      const rects = paneRects(this.panes, width, height, SPLIT_GAP, SPLIT_EDGE);
+      const focused = rects.get(this.activeTabId);
+      if (barPixels && focused) {
+        const strip = Math.min(barPixels, focused.height);
+        barRect = {
+          x: focused.x,
+          y: focused.y + focused.height - strip,
+          width: focused.width,
+          height: strip,
+        };
+      }
       for (const [id, rect] of rects) {
         const paneTab = this.tabs.get(id);
         if (!paneTab) continue;
         const view = this.attachTabView(paneTab);
-        if (view && place(view, rect)) this.pageLayouts += 1;
+        // The page under the bar gives up the strip, as it does without a
+        // split, so the list never covers the page it is over.
+        const bounds = barRect && id === this.activeTabId
+          ? { ...rect, height: Math.max(0, rect.height - barRect.height) }
+          : rect;
+        if (view && place(view, bounds)) this.pageLayouts += 1;
       }
       this.panePlacement = rects;
       this.ensurePaneEdges(rects.size);
@@ -1314,7 +1336,14 @@ class Browser {
       place(this.panel, { x: chromeX, y: 0, width: chromeWidth, height: contentHeight });
     }
     if (this.barVisible && this.bar) {
-      place(this.bar, { x: chromeX, y: height - barPixels, width: chromeWidth, height: barPixels });
+      if (barRect) {
+        // The bar keeps clear of the sidebar, as it does with no split.
+        const x = Math.max(barRect.x, chromeX);
+        const right = Math.min(barRect.x + barRect.width, width);
+        place(this.bar, { x, y: barRect.y, width: Math.max(0, right - x), height: barRect.height });
+      } else {
+        place(this.bar, { x: chromeX, y: height - barPixels, width: chromeWidth, height: barPixels });
+      }
     }
   }
 
@@ -2073,7 +2102,7 @@ class Browser {
   }
 
   /**
-   * Alt+O / Alt+I: the place `delta` away in the list, restored whole. In the
+   * Ctrl+O / Ctrl+I: the place `delta` away in the list, restored whole. In the
    * same tab a page is reached by a step of its own history when it is there,
    * so the jump costs no load; a tab moved between windows, or a page whose
    * renderer was swapped away, falls back to the address.
@@ -2522,7 +2551,7 @@ class Browser {
       this.go(1);
       return true;
     }
-    // Alt+O / Alt+I walk the window's jumps — every tab and page the keys
+    // Ctrl+O / Ctrl+I walk the window's jumps — every tab and page the keys
     // took it to — the way C-o/C-i walk the editor's jump list.
     if (matchesAny(input, keys.jumpBack)) {
       this.goJump(-1);
@@ -4049,7 +4078,34 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
-    return showWindow({ restore: true });
+    return showWindow({ restore: true }).then((window) => {
+      if (!process.env.BAR_SMOKE || !NO_UI) return window;
+      const w = window;
+      const dump = (label) => {
+        const [width, height] = w.win.getContentSize();
+        const active = w.activeTabId;
+        console.log(`SMOKE ${label} win ${width}x${height} active=${active}`);
+        for (const [id, rect] of w.panePlacement ?? []) {
+          const bounds = w.tabView(w.tabs.get(id))?.getBounds();
+          console.log(`SMOKE ${label} pane ${id} rect=${JSON.stringify(rect)} view=${JSON.stringify(bounds)}`);
+        }
+        console.log(`SMOKE ${label} bar=${JSON.stringify(w.barVisible ? w.bar.getBounds() : null)}`);
+      };
+      setTimeout(() => {
+        dump('nobar');
+        w.splitPane('vertical');
+        setTimeout(() => {
+          dump('address');
+          w.barHeight = BAR_HEIGHT + 3 * BAR_ROW + BAR_PAD;
+          w.layout();
+          setTimeout(() => {
+            dump('list');
+            app.quit();
+          }, 300);
+        }, 500);
+      }, 1500);
+      return w;
+    });
   });
 }
 
