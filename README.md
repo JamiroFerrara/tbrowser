@@ -512,8 +512,11 @@ starting the executable again.
   user data instead (`%APPDATA%\tbrowser\show.request` on Windows); the daemon
   watches for it. AutoHotkey can do that with `FileAppend`.
 - The word the request carries picks the window: `show` focuses the one already
-  open, `new` opens another, the way `Ctrl+N` does. `node scripts/show.mjs
-  --new` asks for the second over the pipe. A hotkey that should not drag the
+  open, `new` opens another, the way `Ctrl+N` does. A `show` that only brings
+  an on-screen window forward leaves the bar as it was — the palette opens for
+  a window the request reveals (hidden or minimized) or builds, not for a
+  window already in front. `node scripts/show.mjs --new` asks for the second
+  over the pipe. A hotkey that should not drag the
   user to a window sitting on another desktop or `GlazeWM` workspace sends
   `new` when no browser window is on the screen in front of them, and `show`
   when one is.

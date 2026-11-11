@@ -343,7 +343,6 @@ function watchViewKeys(webContents) {
   webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return;
     const owner = viewOwners.get(webContents.id);
-    console.log('[debug] input', webContents.id, input.type, input.key, input.control, input.shift, Boolean(owner));
     if (owner && owner.pressShortcut(input)) event.preventDefault();
   });
 }
@@ -1668,7 +1667,6 @@ class Browser {
    * command, and text that names no command is searched.
    */
   showBar(mode = 'address') {
-    console.log('[debug] showBar', mode, new Error().stack.split('\n').slice(1,6).join(' | '));
     if (!this.barLoaded) {
       this.pendingBar = mode;
       return;
@@ -1694,7 +1692,6 @@ class Browser {
   }
 
   hideBar({ focusPage = true } = {}) {
-    console.log('[debug] hideBar', focusPage, this.barVisible);
     if (!this.barVisible) return;
     this.barVisible = false;
     this.barListOpen = false;
@@ -3180,12 +3177,16 @@ function showWindow({ restore = false } = {}) {
   if (existing) {
     // A no-ui run never brings a window back: not showing it is the whole point.
     if (NO_UI) return Promise.resolve();
+    // A window the request actually reveals is a launch and comes up to type:
+    // hidden, minimized, or built on a desktop the user is not looking at, the
+    // bar opens with the caret in it the way a cold start's does. A window
+    // already on screen is only brought forward — asking for it while it is in
+    // front must not throw the bar over the page being read, and neither must
+    // focusing it again after a tab closed.
+    const revealed = !existing.win.isVisible() || existing.win.isMinimized();
     if (!existing.win.isVisible()) existing.win.show();
     existing.focus();
-    // A launch is a request to type: the bar comes up with the caret in it, the
-    // way a cold start's does, instead of leaving focus wherever the window had
-    // it. Focus lands after the window's, or the bar's would be undone.
-    existing.showBar();
+    if (revealed) existing.showBar();
     return Promise.resolve();
   }
   if (!restore) return openWindow();
