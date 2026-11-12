@@ -107,6 +107,23 @@ test('a favourite keeps the name typed in settings over the one the visit record
   assert.equal(rows[0].value, 'https://docs.example.com/');
 });
 
+test('an open tab showing a favourite is found by the name typed in settings', () => {
+  const tabs = [
+    { id: 1, url: 'https://github.com/JamiroFerrara', title: 'JamiroFerrara · GitHub', active: false },
+  ];
+  const starred = [{ url: tabs[0].url, title: 'Github - JamiroFerrara' }];
+  const rows = suggestions(':s Github - JamiroFerrara', {
+    favourites: starred,
+    searchUrl: SEARCH,
+    tabs,
+    now: NOW,
+  });
+  assert.equal(rows[0].kind, 'tab');
+  assert.equal(rows[0].title, 'Github - JamiroFerrara');
+  assert.equal(rows[0].value, ':tab 1');
+  assert.equal(rows.length, 2); // the search row, not a second copy of the page
+});
+
 test('a favourite with no name keeps the title the visit recorded', () => {
   const rows = suggestions(':s real', {
     history: [{ url: 'https://docs.example.com/', title: 'The real title', visits: [NOW] }],
