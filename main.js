@@ -59,6 +59,21 @@ const PANE_EDGE = { dark: '#3a3a3a', light: '#d4d4d4' };
 const PANE_EDGE_ACTIVE = { dark: '#5b8def', light: '#5b8def' };
 const paneEdge = (active) =>
   (active ? PANE_EDGE_ACTIVE : PANE_EDGE)[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
+// While a pane's page is on its way, a line runs across the top of that pane:
+// the splash's matrix green over a dim track of the same colour. It is a plain
+// view, not a page — a load never waits on a second renderer — and the line
+// moves by having its bounds changed, which needs no repaint.
+const LOAD_BAR_HEIGHT = 2;
+// A load that ends inside this window never shows a line: ctrl+t has to feel
+// like the splash was always there, not like a bar flashed over it.
+const LOAD_DELAY_MS = 120;
+const LOAD_STEP_MS = 33;
+const LOAD_SWEEP_MS = 1100;
+const LOAD_LINE = { dark: '#00ff41', light: '#0b7a2f' };
+const LOAD_TRACK = { dark: '#4000ff41', light: '#4d0b7a2f' };
+// Views take #AARRGGBB, so the track is the line's colour at a quarter alpha.
+const loadBarColor = (track) =>
+  (track ? LOAD_TRACK : LOAD_LINE)[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
 // The same arrangement, with every leaf renamed: tab ids to their places in
 // the tab list and back, when a state file changes hands.
 const mapPanes = (node, fn) =>
@@ -881,6 +896,10 @@ class Browser {
     // The strips framing those panes, lit on the one with the keys; they
     // belong to a window, so a window that goes takes them with it.
     this.paneEdges = null;
+    // The loading lines, one per tab whose page is coming: the views, where
+    // the tab's page is on screen, and the clock the line sweeps on.
+    this.loadBars = new Map(); // tab id -> { track, head, shown, attached, rect, ... }
+    this.loadTimer = null;
     // The command bar's current shape; the session picker is one of them.
     this.barMode = 'address';
     // The tab a split pairs with, and the tab focus came from.
@@ -1060,6 +1079,11 @@ class Browser {
     // Waited for last, so the pages start loading beside the bar instead of
     // behind it: the bar only holds the launch back if its own renderer is
     // slower than the page's, and nothing else waits on either.
+    const probe = (label) => console.log('[probe]', label, JSON.stringify([...this.loadBars.entries()].map(([id, b]) => ({ id, attached: b.attached, shown: b.shown, rect: b.rect, head: b.attached ? b.head.getBounds() : null }))));
+    setTimeout(() => { const t = this.activeTab(); const wc = t && this.tabView(t).webContents; console.log('[probe] simulating start-loading on tab', t && t.id, 'children', this.win.contentView.children.length); probe('before'); wc.emit('did-start-loading'); }, 3000);
+    setTimeout(() => { probe('mid'); for (const b of this.loadBars.values()) if (b.attached) console.log('[probe] track', JSON.stringify(b.track.getBounds()), 'head', JSON.stringify(b.head.getBounds())); }, 3600);
+    setTimeout(() => { const t = this.activeTab(); const wc = t && this.tabView(t).webContents; wc.emit('did-stop-loading'); }, 4200);
+    setTimeout(() => { console.log('[probe] children after detach', this.win.contentView.children.length); probe('after stop'); console.log('[probe] children after', this.win.contentView.children.length); app.exit(0); }, 5000);
     await barReady;
     this.showBar();
     // Warm the panel, the spare chrome and the spare empty tab after the
@@ -1113,6 +1137,9 @@ class Browser {
       this.closeSteps(tab);
     }
     this.tabs.clear();
+    // The loading lines were the window's: their views go with it.
+    for (const id of [...this.loadBars.keys()]) this.dropLoadBar(id);
+    this.stopLoadSweep();
     this.activeTabId = null;
     this.dropBackStep();
     clearTimeout(this.persistTimer);
@@ -1325,6 +1352,7 @@ class Browser {
           ? { ...rect, height: Math.max(0, rect.height - barRect.height) }
           : rect;
         if (view && place(view, bounds)) this.pageLayouts += 1;
+        this.placeLoadBar(paneTab, rect);
       }
       this.panePlacement = rects;
       this.ensurePaneEdges(rects.size);
@@ -1334,6 +1362,13 @@ class Browser {
       if (tab?.view && place(tab.view, { x: 0, y: 0, width, height: contentHeight })) {
         this.pageLayouts += 1;
       }
+      if (tab) this.placeLoadBar(tab, { x: 0, y: 0, width });
+    }
+    // A line belongs to a pane on screen: a tab that left the screen, or one
+    // whose page arrived while it was hidden, takes its line with it.
+    const shown = new Set(this.shownTabs());
+    for (const [id, bar] of this.loadBars) {
+      if (bar.attached && (!shown.has(id) || !bar.shown)) this.detachLoadBar(bar);
     }
     const chromeX = this.sidebarVisible ? SIDEBAR_WIDTH : 0;
     const chromeWidth = Math.max(0, width - chromeX);
@@ -1454,6 +1489,130 @@ class Browser {
       }
     }
     this.paintPaneEdges();
+  }
+
+  // ----------------------------------------------------------------- loading
+  //
+  // A page that takes a moment says so: a green line runs across the top of
+  // the pane it is in, out of the splash's colour. Nothing here is a renderer
+  // and nothing here is a repaint — the track sits still and one rectangle
+  // moves along it — so the page's own load never waits on the indicator.
+
+  /** The line a tab's page shows while it loads: made on that page's first load. */
+  loadBarFor(tab) {
+    let bar = this.loadBars.get(tab.id);
+    if (bar) return bar;
+    const track = new View();
+    const head = new View();
+    bar = { track, head, delay: null, shown: false, attached: false, rect: null, started: 0 };
+    this.loadBars.set(tab.id, bar);
+    return bar;
+  }
+
+  /** Above the pages, so the line shows; below the chrome, so it paints over none of it. */
+  attachLoadBar(bar) {
+    if (bar.attached || !this.win) return;
+    const pages = [...this.tabs.values()].filter((tab) => tab.attached).length;
+    bar.track.setBackgroundColor(loadBarColor(true));
+    bar.head.setBackgroundColor(loadBarColor(false));
+    this.win.contentView.addChildView(bar.track, pages);
+    this.win.contentView.addChildView(bar.head, pages + 1);
+    bar.attached = true;
+    bar.started = Date.now();
+    console.log('[probe] ATTACHED children', this.win.contentView.children.length);
+  }
+
+  detachLoadBar(bar) {
+    if (bar.attached) {
+      try {
+        this.win?.contentView.removeChildView(bar.track);
+        this.win?.contentView.removeChildView(bar.head);
+      } catch {
+        // the window went with the page
+      }
+      bar.attached = false;
+    }
+    bar.rect = null;
+    if (![...this.loadBars.values()].some((other) => other.attached)) this.stopLoadSweep();
+  }
+
+  /**
+   * A page started loading. The line waits a moment before it shows: a load
+   * that ends inside that moment — the splash, a page already warm — never
+   * gets a bar flashed over it.
+   */
+  beginLoad(tab) {
+    console.log('[probe] beginLoad tab', tab.id);
+    const bar = this.loadBarFor(tab);
+    bar.shown = false;
+    clearTimeout(bar.delay);
+    bar.delay = setTimeout(() => {
+      bar.delay = null;
+      // The tab may have closed, or come back as another one, inside the wait.
+      if (this.tabs.get(tab.id) !== tab) return;
+      bar.shown = true;
+      this.layout();
+    }, LOAD_DELAY_MS);
+  }
+
+  /** The page is there: the line goes with it. */
+  endLoad(tab) {
+    console.log('[probe] endLoad tab', tab.id, 'attached', Boolean(this.loadBars.get(tab.id)?.attached));
+    this.dropLoadBar(tab.id);
+  }
+
+  /** Forget a tab's line: its page arrived, or the tab itself is gone. */
+  dropLoadBar(id) {
+    const bar = this.loadBars.get(id);
+    if (!bar) return;
+    clearTimeout(bar.delay);
+    this.detachLoadBar(bar);
+    this.loadBars.delete(id);
+  }
+
+  /** Put a tab's line across the top of the pane its page is drawn in. */
+  placeLoadBar(tab, rect) {
+    const bar = this.loadBars.get(tab.id);
+    if (!bar?.shown) return;
+    if (!bar.attached) this.attachLoadBar(bar);
+    bar.rect = { x: rect.x, y: rect.y, width: rect.width };
+    console.log('[probe] place track', JSON.stringify(bar.track.getBounds()), 'head', JSON.stringify(bar.head.getBounds()));
+    place(bar.track, { x: rect.x, y: rect.y, width: rect.width, height: LOAD_BAR_HEIGHT });
+    this.startLoadSweep();
+    this.sweepLoadBars();
+  }
+
+  /**
+   * Move each line one step along its pane, out past the right edge and back
+   * in at the left: a scan over the page rather than a bar that pretends to
+   * know how much of the load is done, which the page never tells us.
+   */
+  sweepLoadBars() {
+    if (!this.win) return this.stopLoadSweep();
+    if (Date.now() - (this._t || 0) > 120) { this._t = Date.now(); for (const b of this.loadBars.values()) if (b.attached) console.log('[probe] sweep head', JSON.stringify(b.head.getBounds())); }
+    const now = Date.now();
+    for (const bar of this.loadBars.values()) {
+      if (!bar.attached || !bar.rect) continue;
+      const { x, y, width } = bar.rect;
+      const reach = Math.max(64, Math.min(200, Math.round(width * 0.22)));
+      const phase = ((now - bar.started) % LOAD_SWEEP_MS) / LOAD_SWEEP_MS;
+      bar.head.setBounds({
+        x: Math.round(x + phase * (width + reach) - reach),
+        y,
+        width: reach,
+        height: LOAD_BAR_HEIGHT,
+      });
+    }
+  }
+
+  startLoadSweep() {
+    if (this.loadTimer) return;
+    this.loadTimer = setInterval(() => this.sweepLoadBars(), LOAD_STEP_MS);
+  }
+
+  stopLoadSweep() {
+    clearInterval(this.loadTimer);
+    this.loadTimer = null;
   }
 
   /**
@@ -1645,6 +1804,7 @@ class Browser {
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
       this.closeSteps(tab);
     }
+    for (const id of [...this.loadBars.keys()]) this.dropLoadBar(id);
     this.tabs.clear();
     this.activeTabId = null;
     this.previousTabId = null;
@@ -2225,6 +2385,10 @@ class Browser {
         this.recordJump();
       }
     });
+    // The line over the page follows its load: it comes up when the load is
+    // slow enough to be worth saying, and it goes when the page arrives.
+    wc.on('did-start-loading', () => this.beginLoad(tab));
+    wc.on('did-stop-loading', () => this.endLoad(tab));
     // Clicking a page is how a split changes which pane the bar and the keys
     // act on. Outside a split this event has nothing to say.
     wc.on('focus', () => {
@@ -2346,6 +2510,8 @@ class Browser {
     const wasPane = this.inPane(id);
     if (remember) rememberBuffer(this, tab);
     this.tabs.delete(id);
+    // The line went with the page it was over.
+    this.dropLoadBar(id);
     // The step back was this tab's: another tab has no history for it.
     if (this.backStep?.tabId === id) this.dropBackStep();
     this.jumps.forget(id);
