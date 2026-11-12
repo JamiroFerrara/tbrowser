@@ -60,17 +60,19 @@ const PANE_EDGE_ACTIVE = { dark: '#5b8def', light: '#5b8def' };
 const paneEdge = (active) =>
   (active ? PANE_EDGE_ACTIVE : PANE_EDGE)[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
 // While a pane's page is on its way, a line runs across the top of that pane:
-// the splash's matrix green over a dim track of the same colour. It is a plain
-// view, not a page — a load never waits on a second renderer — and the line
-// moves by having its bounds changed, which needs no repaint.
+// the splash quote's catppuccin blue over a dim track of the same colour. It
+// is a plain view, not a page — a load never waits on a second renderer — and
+// the line moves by having its bounds changed, which needs no repaint.
 const LOAD_BAR_HEIGHT = 2;
 // A load that ends inside this window never shows a line: ctrl+t has to feel
 // like the splash was always there, not like a bar flashed over it.
 const LOAD_DELAY_MS = 120;
 const LOAD_STEP_MS = 33;
 const LOAD_SWEEP_MS = 1100;
-const LOAD_LINE = { dark: '#00ff41', light: '#0b7a2f' };
-const LOAD_TRACK = { dark: '#4000ff41', light: '#4d0b7a2f' };
+// The splash's own quote colour (--splash-quote in ui/home.html): catppuccin
+// latte blue on a light theme, macchiato blue behind the dark one.
+const LOAD_LINE = { dark: '#89b4fa', light: '#1e66f5' };
+const LOAD_TRACK = { dark: '#4089b4fa', light: '#4d1e66f5' };
 // Views take #AARRGGBB, so the track is the line's colour at a quarter alpha.
 const loadBarColor = (track) =>
   (track ? LOAD_TRACK : LOAD_LINE)[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
@@ -458,6 +460,12 @@ function applyBlur() {
     }
     for (const tab of window.tabs.values()) {
       if (tab.url === HOME && tab.view) tab.view.setBackgroundColor(bg);
+    }
+    // A loading line carries the theme's blue with it.
+    for (const bar of window.loadBars.values()) {
+      if (!bar.attached) continue;
+      bar.track.setBackgroundColor(loadBarColor(true));
+      bar.head.setBackgroundColor(loadBarColor(false));
     }
   }
   for (const [kind, entry] of [
@@ -1079,11 +1087,6 @@ class Browser {
     // Waited for last, so the pages start loading beside the bar instead of
     // behind it: the bar only holds the launch back if its own renderer is
     // slower than the page's, and nothing else waits on either.
-    const probe = (label) => console.log('[probe]', label, JSON.stringify([...this.loadBars.entries()].map(([id, b]) => ({ id, attached: b.attached, shown: b.shown, rect: b.rect, head: b.attached ? b.head.getBounds() : null }))));
-    setTimeout(() => { const t = this.activeTab(); const wc = t && this.tabView(t).webContents; console.log('[probe] simulating start-loading on tab', t && t.id, 'children', this.win.contentView.children.length); probe('before'); wc.emit('did-start-loading'); }, 3000);
-    setTimeout(() => { probe('mid'); for (const b of this.loadBars.values()) if (b.attached) console.log('[probe] track', JSON.stringify(b.track.getBounds()), 'head', JSON.stringify(b.head.getBounds())); }, 3600);
-    setTimeout(() => { const t = this.activeTab(); const wc = t && this.tabView(t).webContents; wc.emit('did-stop-loading'); }, 4200);
-    setTimeout(() => { console.log('[probe] children after detach', this.win.contentView.children.length); probe('after stop'); console.log('[probe] children after', this.win.contentView.children.length); app.exit(0); }, 5000);
     await barReady;
     this.showBar();
     // Warm the panel, the spare chrome and the spare empty tab after the
@@ -1493,7 +1496,7 @@ class Browser {
 
   // ----------------------------------------------------------------- loading
   //
-  // A page that takes a moment says so: a green line runs across the top of
+  // A page that takes a moment says so: a blue line runs across the top of
   // the pane it is in, out of the splash's colour. Nothing here is a renderer
   // and nothing here is a repaint — the track sits still and one rectangle
   // moves along it — so the page's own load never waits on the indicator.
@@ -1519,7 +1522,6 @@ class Browser {
     this.win.contentView.addChildView(bar.head, pages + 1);
     bar.attached = true;
     bar.started = Date.now();
-    console.log('[probe] ATTACHED children', this.win.contentView.children.length);
   }
 
   detachLoadBar(bar) {
@@ -1542,7 +1544,6 @@ class Browser {
    * gets a bar flashed over it.
    */
   beginLoad(tab) {
-    console.log('[probe] beginLoad tab', tab.id);
     const bar = this.loadBarFor(tab);
     bar.shown = false;
     clearTimeout(bar.delay);
@@ -1557,7 +1558,6 @@ class Browser {
 
   /** The page is there: the line goes with it. */
   endLoad(tab) {
-    console.log('[probe] endLoad tab', tab.id, 'attached', Boolean(this.loadBars.get(tab.id)?.attached));
     this.dropLoadBar(tab.id);
   }
 
@@ -1576,7 +1576,6 @@ class Browser {
     if (!bar?.shown) return;
     if (!bar.attached) this.attachLoadBar(bar);
     bar.rect = { x: rect.x, y: rect.y, width: rect.width };
-    console.log('[probe] place track', JSON.stringify(bar.track.getBounds()), 'head', JSON.stringify(bar.head.getBounds()));
     place(bar.track, { x: rect.x, y: rect.y, width: rect.width, height: LOAD_BAR_HEIGHT });
     this.startLoadSweep();
     this.sweepLoadBars();
@@ -1589,7 +1588,6 @@ class Browser {
    */
   sweepLoadBars() {
     if (!this.win) return this.stopLoadSweep();
-    if (Date.now() - (this._t || 0) > 120) { this._t = Date.now(); for (const b of this.loadBars.values()) if (b.attached) console.log('[probe] sweep head', JSON.stringify(b.head.getBounds())); }
     const now = Date.now();
     for (const bar of this.loadBars.values()) {
       if (!bar.attached || !bar.rect) continue;

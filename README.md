@@ -363,6 +363,20 @@ kept for a window that is not in front as well. The tint can only lighten the
 material: Windows lays its own wash over the desktop, and no setting removes
 that.
 
+## Loading
+
+A page that takes a moment says so: a blue line runs across the top of its
+pane, in the splash quote's own colour over a dim track of the same blue. It
+scans left to right instead of filling up, because Chromium says when a load
+starts and stops, never how far along it is. It comes up only after a load has
+lasted 120ms, so a new tab, a page already warm, and a quick reload show
+nothing at all.
+
+The line is a plain `View`, not a page: it costs no renderer, and it moves by
+having one rectangle's bounds changed, so the load it reports never waits on
+it. A split shows one line per loading pane, and a line goes the moment its
+page is there.
+
 ## Extensions
 
 Three directories are scanned at startup; each subfolder with a `manifest.json`
