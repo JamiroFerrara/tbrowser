@@ -1,0 +1,64 @@
+# Maintainer: Jamiro Ferrara <jamiroferrara@users.noreply.github.com>
+
+pkgname=tbrowser-bin
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Minimal Chromium browser with Chrome extensions and a vim-style command bar'
+arch=('x86_64')
+url='https://github.com/JamiroFerrara/tbrowser'
+license=('unknown')
+depends=(
+  'alsa-lib'
+  'at-spi2-core'
+  'cairo'
+  'libcups'
+  'dbus'
+  'expat'
+  'gcc-libs'
+  'glib2'
+  'glibc'
+  'gtk3'
+  'libnotify'
+  'libsecret'
+  'libx11'
+  'libxcb'
+  'libxcomposite'
+  'libxdamage'
+  'libxext'
+  'libxfixes'
+  'libxkbcommon'
+  'libxrandr'
+  'libxss'
+  'libxtst'
+  'mesa'
+  'nspr'
+  'nss'
+  'pango'
+  'systemd-libs'
+  'xdg-utils'
+)
+optdepends=(
+  'libpulse: PulseAudio audio backend'
+)
+provides=('tbrowser')
+conflicts=('tbrowser')
+options=('!strip' '!debug')
+source=("$pkgname-$pkgver.deb::$url/releases/download/v$pkgver/tbrowser-$pkgver-linux-amd64.deb")
+noextract=("$pkgname-$pkgver.deb")
+sha256sums=('cd953c953d95d92afb72a676aad2b9837e564b869159b289b5cb4f096ae5259c')
+
+build() {
+  bsdtar -C "$srcdir" -xf "$srcdir/$pkgname-$pkgver.deb" data.tar.xz
+  mkdir -p payload
+  bsdtar -C payload -xf data.tar.xz
+}
+
+package() {
+  install -d "$pkgdir/opt" "$pkgdir/usr/bin"
+  cp -a payload/opt/tbrowser "$pkgdir/opt/"
+  cp -a payload/usr/share "$pkgdir/usr/"
+  ln -s /opt/tbrowser/tbrowser "$pkgdir/usr/bin/tbrowser"
+
+  # User namespaces do the sandboxing on Arch; never ship the SUID helper.
+  chmod 0755 "$pkgdir/opt/tbrowser/chrome-sandbox"
+}

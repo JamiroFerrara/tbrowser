@@ -46,6 +46,21 @@ npm run pack:linux           # AppImage and .deb
 npm run pack:mac             # x64 and arm64 .dmg
 ```
 
+## Arch Linux
+
+`packaging/aur/tbrowser-bin/PKGBUILD` repacks the Linux release `.deb` into an
+AUR package. Build and install it straight from a checkout:
+
+```bash
+cd packaging/aur/tbrowser-bin
+makepkg -si
+```
+
+The package installs under `/opt/tbrowser` and links `/usr/bin/tbrowser`. When a
+release is tagged, `pkgver` and `sha256sums` in the PKGBUILD move with it, and
+`.SRCINFO` is regenerated with `makepkg --printsrcinfo > .SRCINFO` before the
+same three files are pushed to the AUR repository.
+
 ## Releases
 
 Pushing a tag that matches the version in `package.json` builds and publishes
