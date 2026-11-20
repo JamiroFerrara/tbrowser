@@ -175,7 +175,11 @@ const NormalModeCommands = {
 
   copyCurrentUrl() {
     chrome.runtime.sendMessage({ handler: "getCurrentTabUrl" }, function (url) {
-      HUD.copyToClipboard(url);
+      // tbrowser: the window owns the clipboard. A write from the page's world
+      // is only as good as the iframe's focus and has no gesture behind it, so
+      // yy asks the window for the copy, the way H and L ask it for their
+      // step. The detail is a string for the same reason as there.
+      document.dispatchEvent(new CustomEvent("tbrowser-copy", { detail: url }));
       // This length is determined empirically based on a 350px width of the HUD. An alternate
       // solution is to have the HUD ellipsize based on its width.
       const maxLength = 40;

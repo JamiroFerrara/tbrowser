@@ -165,6 +165,8 @@ let model = null; // the last settings payload: config, configPath, defaults
 let dirty = false;
 /** The settings section the sidebar shows; kept across a redraw. */
 let categoryIndex = 0;
+/** Walks the sidebar from the routed key; replaced on every settings render. */
+let moveCategory = () => {};
 
 function markDirty() {
   dirty = true;
@@ -648,6 +650,14 @@ function renderSettings(data) {
     if (scroll) content.closest('main').scrollTop = 0;
   };
 
+  // The keys routed from the browser walk the same list the arrows do, so a
+  // redraw replaces this closure instead of stacking another handler.
+  moveCategory = (delta) => {
+    const next = (categoryIndex + delta + sections.length) % sections.length;
+    showCategory(next, true);
+    buttons[next].focus();
+  };
+
   nav.replaceChildren(el('div', 'nav-title', 'Settings'), ...buttons);
   content.replaceChildren(...sections);
   showCategory(categoryIndex);
@@ -666,6 +676,10 @@ window.panel.onShow(async (page) => {
   if (page === 'extensions') renderExtensions(data);
   else renderSettings(data);
 });
+
+// The browser routed a nav key here (settings sidebar only); the current
+// settings render decides where it lands.
+window.panel.onMove((delta) => moveCategory(delta));
 
 // A session saved, renamed or forgotten anywhere — the picker, another
 // window's settings page — redraws this list without touching the form.

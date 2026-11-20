@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('panel', {
   setEditing: (editing) => ipcRenderer.send('panel:editing', editing),
   openPath: (target) => ipcRenderer.send('panel:open-path', target),
   onShow: (callback) => ipcRenderer.on('panel:show', (_event, page) => callback(page)),
+  onMove: (callback) => ipcRenderer.on('panel:move', (_event, delta) => callback(delta)),
   onSettingsChanged: (callback) => ipcRenderer.on('settings:changed', (_event, data) => callback(data)),
   onSessionsChanged: (callback) => ipcRenderer.on('sessions:changed', (_event, data) => callback(data)),
   onFavouritesChanged: (callback) => ipcRenderer.on('favourites:changed', (_event, data) => callback(data)),

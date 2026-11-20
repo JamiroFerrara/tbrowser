@@ -106,6 +106,8 @@ require them.
 | `Alt+9` | go to the last tab |
 | `Ctrl+1` … `Ctrl+9` | attach this window to the session in that place of the order |
 | `Ctrl+R`, `F5` | reload |
+| `Ctrl+=`, `Ctrl+-` | zoom the page in / out |
+| `Ctrl+0` | reset the zoom to 100% |
 | `Alt+Left` / `Alt+Right` | back / forward on this page |
 | `Ctrl+O` / `Ctrl+I` | jump back / forward through tabs and pages |
 | `Alt+O` / `Alt+I` | the same two jumps, for the older habit |

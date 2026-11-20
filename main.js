@@ -9,6 +9,7 @@ const {
   ipcMain,
   Menu,
   shell,
+  clipboard,
   nativeTheme,
   webContents,
 } = require('electron');
@@ -95,6 +96,10 @@ const BLANK = 'about:blank'; // what state files written before the home page ho
 // instead of white.
 const CHROME_BG = { dark: '#1b1b1b', light: '#f5f5f5' };
 const chromeBg = () => (nativeTheme.shouldUseDarkColors ? CHROME_BG.dark : CHROME_BG.light);
+// Page zoom is per tab, a tenth a press, inside the range Chromium paints.
+const ZOOM_STEP = 0.1;
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 5;
 // `backgroundMaterial` is Windows 11 22H2 and up. Older Windows would see a
 // window told it is translucent with no blur behind it — a black hole where
 // the chrome should be — so the backdrop is only asked for where it exists.
@@ -1811,7 +1816,7 @@ class Browser {
     const urls = Array.isArray(state.tabs) && state.tabs.length ? state.tabs : [HOME];
     const ids = urls.map((url) => {
       const id = nextTabId++;
-      this.tabs.set(id, { id, view: null, title: '', url });
+      this.tabs.set(id, { id, view: null, title: '', url, zoom: 1 });
       return id;
     });
     const active = ids[Number.isInteger(state.activeTab) ? state.activeTab : 0] ?? ids[0];
@@ -1914,7 +1919,7 @@ class Browser {
    * renderer — nothing loads, so it is there in the frame it was asked for.
    */
   adoptBuffer(entry) {
-    const tab = { id: entry.id, view: null, title: entry.title, url: entry.url, attached: false };
+    const tab = { id: entry.id, view: null, title: entry.title, url: entry.url, attached: false, zoom: 1 };
     this.tabs.set(tab.id, tab);
     this.swapTabView(tab, entry.view, { attach: false });
     this.activateTab(tab.id);
@@ -1966,6 +1971,9 @@ class Browser {
     tab.url = wc.getURL() || tab.url;
     track(this, view);
     this.wireTab(tab);
+    // A page kept warm was made for another tab (or no tab) and carries that
+    // page's zoom; this tab's factor goes on it before it is painted.
+    this.applyZoom(tab);
     tab.title = wc.getTitle() || '';
     if (attach && this.win) {
       this.win.contentView.addChildView(view, 0);
@@ -2396,9 +2404,47 @@ class Browser {
     watchGesture(wc);
   }
 
+  /**
+   * The zoom of the page the keys are in. The focused pane's tab is the one
+   * `pressShortcut` answers for: clicking a page in a split moves `activeTabId`
+   * to it, so the keystroke and the tab agree.
+   */
+  setZoom(factor) {
+    const tab = this.activeTab();
+    if (!tab) return;
+    const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, factor));
+    // Rounded to the step, so ten presses of + read as 2, not 2.0000000000000004.
+    tab.zoom = Math.round(clamped * 100) / 100;
+    this.applyZoom(tab);
+  }
+
+  zoomBy(delta) {
+    const tab = this.activeTab();
+    if (!tab) return;
+    this.setZoom((Number.isFinite(tab.zoom) ? tab.zoom : 1) + delta);
+  }
+
+  /**
+   * Put a tab's factor on its view. The mode is isolated so Chromium keeps
+   * the zoom in this view instead of sharing it with every window showing the
+   * same origin — a page zoomed here must not follow its neighbours.
+   */
+  applyZoom(tab, view = tab.view) {
+    if (!view) return;
+    const wc = view.webContents;
+    if (wc.isDestroyed()) return;
+    if (wc.getZoomMode() !== 'isolated') wc.setZoomMode('isolated');
+    wc.setZoomFactor(Number.isFinite(tab.zoom) ? tab.zoom : 1);
+  }
+
   /** Create a tab's renderer on first use; a restored tab costs nothing until then. */
   tabView(tab) {
-    if (tab.view) return tab.view;
+    if (tab.view) {
+      // A tab coming back to a pane keeps the factor it was left at; putting
+      // it on the view again also undoes anything Chromium's own zoom did.
+      this.applyZoom(tab);
+      return tab.view;
+    }
     // A favourite kept ready is taken whole: the tab opens on a page that is
     // already loaded instead of starting a load of its own.
     if (tab.url && tab.url !== HOME) {
@@ -2413,6 +2459,7 @@ class Browser {
     tab.view = view;
     track(this, view);
     this.wireTab(tab);
+    this.applyZoom(tab);
     if (warm) {
       // The spare already has a quote painted; this tab gets its own, and the
       // swap costs a text change rather than a page load.
@@ -2430,7 +2477,7 @@ class Browser {
 
   createTab({ url = HOME, activate = true, openBar = false, focus = true } = {}) {
     const id = nextTabId++;
-    const tab = { id, view: null, title: '', url, attached: false };
+    const tab = { id, view: null, title: '', url, attached: false, zoom: 1 };
     this.tabs.set(id, tab);
     // activateTab already repaints the list; only a background tab needs it.
     // A tab whose bar opens hands the focus to the bar instead of the page:
@@ -2639,6 +2686,20 @@ class Browser {
         return true;
       }
     }
+    // With the settings sidebar up, ctrl+j/ctrl+k walk its sections. This
+    // comes before the openBar match below, where ctrl+k would otherwise win,
+    // and never sees a key typed into a field: panelEditing bailed above.
+    if (this.panelVisible && this.currentPanel === 'settings') {
+      const delta = matchesAny(input, keys.nextSuggestion)
+        ? 1
+        : matchesAny(input, keys.prevSuggestion)
+          ? -1
+          : 0;
+      if (delta) {
+        this.panel.webContents.send('panel:move', delta);
+        return true;
+      }
+    }
     // Only a handful of openers; the rest of the table is matched without
     // re-parsing accelerator strings on every keystroke.
     const openerIndex = keys.openBar.findIndex((expected) => matchesAny(input, [expected]));
@@ -2710,6 +2771,20 @@ class Browser {
     }
     if (matchesAny(input, keys.reload)) {
       this.activeTab()?.view?.webContents.reload();
+      return true;
+    }
+    // C-= / C-- / C-0 are the browser's page zoom: the focused pane's tab,
+    // kept with the tab so another tab's page never takes its factor.
+    if (matchesAny(input, keys.zoomIn)) {
+      this.zoomBy(ZOOM_STEP);
+      return true;
+    }
+    if (matchesAny(input, keys.zoomOut)) {
+      this.zoomBy(-ZOOM_STEP);
+      return true;
+    }
+    if (matchesAny(input, keys.zoomReset)) {
+      this.setZoom(1);
       return true;
     }
     if (matchesAny(input, keys.back)) {
@@ -2881,7 +2956,10 @@ function sharedTabRows(current) {
 function updateSidebars() {
   for (const window of windows) {
     if (!window.sidebar || !window.sidebarLoaded) continue;
-    window.sidebar.webContents.send('tabs:update', sharedTabRows(window));
+    // The splash is where a tab is born, not a page you go back to: a new
+    // tab never earns a row, and a window holding only one shows none.
+    const rows = sharedTabRows(window).filter((row) => row.url !== HOME);
+    window.sidebar.webContents.send('tabs:update', rows);
   }
 }
 
@@ -3611,6 +3689,26 @@ ipcMain.on('page:step', (event, delta) => {
   if (index >= 0 && index < history.length()) history.goToIndex(index);
 });
 
+/**
+ * A page asking the window for its address — Vimium's yy. Electron gives a
+ * page's own `navigator.clipboard.writeText` no gesture and no guaranteed
+ * focused document, so the copy is taken here, where it always lands. Page
+ * scripts can dispatch the same event, so the text copied is the address the
+ * page already has; a page cannot put a string of its choosing on the
+ * clipboard. Vimium sends the tab URL, which is that address.
+ */
+ipcMain.on('page:copy-url', (event, url) => {
+  const sender = event.sender;
+  // Only while the page has the keyboard. Page scripts can reach the event
+  // too, and Electron's clipboard has no focus rule of its own, so without
+  // this a background tab could overwrite what the user copied. yy's keypress
+  // has already proved the tab is the focused one.
+  if (!sender.isFocused()) return;
+  const page = sender.getURL();
+  if (!page) return;
+  clipboard.writeText(typeof url === 'string' && url === page ? url : page);
+});
+
 ipcMain.on('sidebar:action', (event, action) => {
   const window = ctxFor(event);
   if (!window || !action || typeof action !== 'object') return;
@@ -4251,6 +4349,11 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
+    if (process.argv.includes('--smoke')) {
+      return showWindow({ restore: true }).then(() => {
+        require('./scripts/smoke')([...windows].pop());
+      });
+    }
     return showWindow({ restore: true });
   });
 }

@@ -107,6 +107,18 @@ test('ctrl+comma ships bound to the settings page', () => {
   assert.equal(matches(key({ key: ',' }), normalize({}).keybindings.settings), false);
 });
 
+test('the page zoom keys ship bound', () => {
+  const bindings = normalize({}).keybindings;
+  assert.deepEqual(bindings.zoomIn, ['ctrl+=']);
+  assert.deepEqual(bindings.zoomOut, ['ctrl+-']);
+  assert.deepEqual(bindings.zoomReset, ['ctrl+0']);
+  assert.equal(matches(key({ key: '=', control: true }), bindings.zoomIn), true);
+  // Shift+= arrives as "+"; it is the same physical key, so it zooms too.
+  assert.equal(matches(key({ key: '+', control: true, shift: true }), bindings.zoomIn), true);
+  assert.equal(matches(key({ key: '-', control: true }), bindings.zoomOut), true);
+  assert.equal(matches(key({ key: '0', control: true }), bindings.zoomReset), true);
+});
+
 test('binding text parses comma-separated accelerators', () => {
   assert.deepEqual(parseBindingText('ctrl+l, ctrl+k'), { ok: true, list: ['ctrl+l', 'ctrl+k'] });
   assert.deepEqual(parseBindingText('  F5  '), { ok: true, list: ['f5'] });

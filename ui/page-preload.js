@@ -11,3 +11,12 @@ document.addEventListener('tbrowser-step', (event) => {
   const delta = Number(event.detail);
   if (Number.isFinite(delta) && delta !== 0) ipcRenderer.send('page:step', delta);
 });
+
+// Vimium's yy. Electron gives a page's own `navigator.clipboard.writeText` no
+// user gesture and no guaranteed focus, so the copy is the window's; this is
+// the same one event out of the isolated world as the step above.
+document.addEventListener('tbrowser-copy', (event) => {
+  if (typeof event.detail === 'string' && event.detail) {
+    ipcRenderer.send('page:copy-url', event.detail);
+  }
+});

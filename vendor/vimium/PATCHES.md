@@ -37,5 +37,14 @@ Local changes only:
    and rejected — it ramps in from a standstill, so the key answer reads as lag.
    `smoothScroll` in Vimium's settings still chooses between the glide and the
    instant jump.
+7. `content_scripts/mode_normal.js` + `ui/page-preload.js` — `yy`
+   (`copyCurrentUrl`) asks the window for the copy with a `tbrowser-copy` event
+   carrying the tab URL, the way `H`/`L` ask for their step, and the window
+   writes the address with Electron's `clipboard` (`main.js`'s `page:copy-url`
+   handler). The HUD iframe's own `navigator.clipboard.writeText` was not a
+   path to rely on: it needs a focused document, and the promise it returns is
+   never observed, so a refused write is silent. Only the sender's own URL is
+   ever copied, so a page script that dispatches the event cannot put text of
+   its choosing on the clipboard. The "Yanked" HUD message is still requested.
 
-To update: copy the new unpacked build over this directory, reapply 1–6.
+To update: copy the new unpacked build over this directory, reapply 1–7.
