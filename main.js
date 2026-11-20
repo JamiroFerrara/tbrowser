@@ -1707,16 +1707,14 @@ class Browser {
    * buffer, and closing the window that showed it does not delete it — so it
    * is still in the tab list and comes back with a split or a click.
    *
-   * With no split there is no pane to close, and the editor quits instead of
-   * doing nothing: here that is this window going away, with every tab it held
-   * left in the buffer list rather than killed.
+   * With no split the pane is the window, so the tab leaves it as a buffer:
+   * the page stays loaded and its row moves under the sidebar's buffers
+   * heading, and the window shows the tab after it — or a fresh new-tab page
+   * when it was the last one. The window itself never goes.
    */
   closePane() {
     if (!this.win || this.activeTabId === null) return false;
-    if (!this.panes) {
-      this.win.close();
-      return true;
-    }
+    if (!this.panes) return this.parkActiveTab();
     const closing = this.activeTabId;
     const tab = this.tabs.get(closing);
     if (!tab || !showsTab(this.panes, closing)) return false;
@@ -1736,6 +1734,34 @@ class Browser {
     // The keys belonged to the pane that just went: hand them to the page that
     // is left, so typing goes to it without a click first.
     this.focusContent();
+    return true;
+  }
+
+  /**
+   * The single-pane Ctrl+W: the tab becomes a buffer instead of the window
+   * going away. The renderer is kept, so reaching for the page again in the
+   * sidebar is a swap rather than a load.
+   */
+  parkActiveTab() {
+    const tab = this.tabs.get(this.activeTabId);
+    if (!tab) return false;
+    const order = [...this.tabs.keys()];
+    const place = order.indexOf(tab.id);
+    this.detachTabView(tab);
+    if (tab.view && !tab.view.webContents.isDestroyed()) parkBuffer(this, tab);
+    this.tabs.delete(tab.id);
+    this.dropLoadBar(tab.id);
+    if (this.backStep?.tabId === tab.id) this.dropBackStep();
+    this.jumps.forget(tab.id);
+    this.closeSteps(tab);
+    setImmediate(syncWarmPages);
+    this.activeTabId = null;
+    const next = this.nextTabAfter(place);
+    if (next === undefined) this.createTab({ url: HOME });
+    else this.activateTab(next);
+    this.layout();
+    updateSidebars();
+    this.persistTabs();
     return true;
   }
 
@@ -2673,6 +2699,21 @@ class Browser {
 
   pressShortcut(input) {
     if (this.panelVisible && this.panelEditing) return false;
+    // The settings page owns ctrl+j/ctrl+k while it is up: its sidebar is the
+    // list those keys walk. This comes before the bar's list (which can be
+    // open behind the panel) and before openBar, where ctrl+k would otherwise
+    // win. A key typed into a field never reaches here — panelEditing bailed.
+    if (this.panelVisible && this.currentPanel === 'settings') {
+      const delta = matchesAny(input, keys.nextSuggestion)
+        ? 1
+        : matchesAny(input, keys.prevSuggestion)
+          ? -1
+          : 0;
+      if (delta) {
+        this.panel.webContents.send('panel:move', delta);
+        return true;
+      }
+    }
     // With a list under the bar, ctrl+j/ctrl+k walk it; with the list empty
     // they fall through to the tab bindings below, as they do on the page.
     if (this.barVisible && this.barListOpen) {
@@ -2683,20 +2724,6 @@ class Browser {
           : 0;
       if (delta) {
         this.bar.webContents.send('bar:move', delta);
-        return true;
-      }
-    }
-    // With the settings sidebar up, ctrl+j/ctrl+k walk its sections. This
-    // comes before the openBar match below, where ctrl+k would otherwise win,
-    // and never sees a key typed into a field: panelEditing bailed above.
-    if (this.panelVisible && this.currentPanel === 'settings') {
-      const delta = matchesAny(input, keys.nextSuggestion)
-        ? 1
-        : matchesAny(input, keys.prevSuggestion)
-          ? -1
-          : 0;
-      if (delta) {
-        this.panel.webContents.send('panel:move', delta);
         return true;
       }
     }
@@ -3539,13 +3566,13 @@ function runCommand(window, command) {
       window.hideBar();
       window.closePanesExcept();
       return null;
-    // The editor's two ways of undoing a pane: `:q` closes the window and
-    // keeps the buffer, `:bd` ends the buffer and closes its window.
+    // The editor's two ways of undoing a pane: `:q` gives the tab up to the
+    // buffers and shows the next, `:bd` ends the tab and its page.
     case 'q':
     case 'quit':
     case 'close':
       window.hideBar();
-      if (!window.closePane()) return 'no split to close';
+      if (!window.closePane()) return 'nothing to close';
       return null;
     case 'bd':
     case 'bdelete':
@@ -3698,13 +3725,13 @@ ipcMain.on('page:step', (event, delta) => {
  * clipboard. Vimium sends the tab URL, which is that address.
  */
 ipcMain.on('page:copy-url', (event, url) => {
-  const sender = event.sender;
-  // Only while the page has the keyboard. Page scripts can reach the event
-  // too, and Electron's clipboard has no focus rule of its own, so without
-  // this a background tab could overwrite what the user copied. yy's keypress
-  // has already proved the tab is the focused one.
-  if (!sender.isFocused()) return;
-  const page = sender.getURL();
+  // Only the tab a window is showing may write the clipboard: page scripts
+  // can reach the event too, so a background tab — or one in a window nobody
+  // is looking at — must not overwrite what the user just copied. `yy`'s
+  // keypress has already proved this is the tab in hand.
+  const window = ctxFor(event);
+  if (!window || window.activeTab()?.view?.webContents !== event.sender) return;
+  const page = event.sender.getURL();
   if (!page) return;
   clipboard.writeText(typeof url === 'string' && url === page ? url : page);
 });
@@ -4349,11 +4376,6 @@ function startApp() {
     // `--hidden` starts the resident process without a window: run at login so
     // every later launch is a request to an already warm browser.
     if (process.argv.includes('--hidden') || process.argv.includes('--daemon')) return undefined;
-    if (process.argv.includes('--smoke')) {
-      return showWindow({ restore: true }).then(() => {
-        require('./scripts/smoke')([...windows].pop());
-      });
-    }
     return showWindow({ restore: true });
   });
 }

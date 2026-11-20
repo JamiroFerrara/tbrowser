@@ -174,19 +174,25 @@ const NormalModeCommands = {
   },
 
   copyCurrentUrl() {
+    // tbrowser: the window owns the clipboard and already knows the address,
+    // so the copy does not wait on a round trip to the background. A write
+    // from the page's world is only as good as the iframe's focus and has no
+    // gesture behind it; this asks the window for the copy, the way H and L
+    // ask it for their step.
+    document.dispatchEvent(new CustomEvent("tbrowser-copy"));
     chrome.runtime.sendMessage({ handler: "getCurrentTabUrl" }, function (url) {
-      // tbrowser: the window owns the clipboard. A write from the page's world
-      // is only as good as the iframe's focus and has no gesture behind it, so
-      // yy asks the window for the copy, the way H and L ask it for their
-      // step. The detail is a string for the same reason as there.
-      document.dispatchEvent(new CustomEvent("tbrowser-copy", { detail: url }));
-      // This length is determined empirically based on a 350px width of the HUD. An alternate
-      // solution is to have the HUD ellipsize based on its width.
-      const maxLength = 40;
-      if (url.length > maxLength) {
-        url = url.slice(0, maxLength - 2) + "...";
-      }
-      HUD.show(`Yanked ${url}`, 2000);
+      // Electron hands a listener's promise back unresolved where Chrome
+      // awaits it, so the address can arrive as a promise; both end at the
+      // URL here. This is the HUD's text only — the clipboard no longer
+      // depends on it.
+      Promise.resolve(url).then((address) => {
+        const maxLength = 40;
+        let shown = String(address ?? "");
+        if (shown.length > maxLength) {
+          shown = shown.slice(0, maxLength - 2) + "...";
+        }
+        HUD.show(`Yanked ${shown}`, 2000);
+      });
     });
   },
 

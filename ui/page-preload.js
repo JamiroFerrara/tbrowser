@@ -14,9 +14,9 @@ document.addEventListener('tbrowser-step', (event) => {
 
 // Vimium's yy. Electron gives a page's own `navigator.clipboard.writeText` no
 // user gesture and no guaranteed focus, so the copy is the window's; this is
-// the same one event out of the isolated world as the step above.
+// the same one event out of the isolated world as the step above. The body is
+// the address the page itself has, which the window checks before copying, so
+// a page cannot put a string of its choosing on the clipboard.
 document.addEventListener('tbrowser-copy', (event) => {
-  if (typeof event.detail === 'string' && event.detail) {
-    ipcRenderer.send('page:copy-url', event.detail);
-  }
+  ipcRenderer.send('page:copy-url', typeof event.detail === 'string' ? event.detail : '');
 });
