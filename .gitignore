@@ -2,3 +2,4 @@ node_modules/
 dist/
 extensions/*
 !extensions/.gitkeep
+vendor/libghostty-vt/

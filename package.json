@@ -13,12 +13,14 @@
   },
   "scripts": {
     "start": "electron .",
+    "prestart": "node scripts/fetch-ghostty-vt.mjs",
+    "fetch:vt": "node scripts/fetch-ghostty-vt.mjs",
     "test": "node --test",
     "add-ext": "node scripts/install-extension.mjs",
-    "pack:win": "node scripts/fetch-koffi-win.mjs && electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --asar.unpack=\"**/*.node\" --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\" --ignore=\"^/\\.tmp-\"",
-    "pack:win:installer": "node scripts/fetch-koffi-win.mjs && electron-builder --win",
-    "pack:linux": "electron-builder --linux",
-    "pack:mac": "electron-builder --mac"
+    "pack:win": "node scripts/fetch-koffi-win.mjs && node scripts/fetch-ghostty-vt.mjs && electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --asar.unpack=\"**/*.node\" --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\" --ignore=\"^/\\.tmp-\"",
+    "pack:win:installer": "node scripts/fetch-koffi-win.mjs && node scripts/fetch-ghostty-vt.mjs && electron-builder --win",
+    "pack:linux": "node scripts/fetch-ghostty-vt.mjs && electron-builder --linux",
+    "pack:mac": "node scripts/fetch-ghostty-vt.mjs && electron-builder --mac"
   },
   "build": {
     "appId": "com.jamiroferrara.tbrowser",

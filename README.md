@@ -116,7 +116,7 @@ require them.
 | `Alt+H` `Alt+J` `Alt+K` `Alt+L` | move to the pane that way |
 | `Ctrl+E` | toggle the sidebar |
 | `Ctrl+,` | open the settings page, and put it away again |
-| `Ctrl+W` | close the pane; the tab stays, and with no split it closes the window |
+| `Ctrl+W` | close the pane; the tab stays loaded as a buffer (with no split, the window shows the next tab) |
 | `Ctrl+Shift+W` | kill the tab (`:bd`) |
 | `F12`, `Ctrl+Shift+I` | DevTools |
 | `Ctrl+N` | new window |
@@ -313,8 +313,9 @@ comes up on it, so the page is one address away.
 The two close verbs are the editor's, and they are not the same key:
 
 - **`Ctrl+W`** is `:q`: it closes the pane and leaves the tab loaded, and the
-  keys go to the pane that is left. With no split there is nothing to close but
-  the window, so `Ctrl+W` closes the window — and its tabs stay as buffers.
+  keys go to the pane that is left. With no split the pane is the window, so
+  the tab moves to the buffers with its page still loaded and the window shows
+  the next tab — or a fresh new-tab page when it was the last one.
 - **`Ctrl+Shift+W`** is `:bd`: it closes the tab — the next tab in the list
   takes its place — and the page's address goes to the buffers, unloaded.
 
