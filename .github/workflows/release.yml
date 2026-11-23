@@ -61,11 +61,6 @@ jobs:
         run: |
           node -e "const p = require('./package.json'); const t = process.env.RELEASE_TAG; if (t !== 'v' + p.version) { console.error('release tag ' + t + ' does not match package.json v' + p.version); process.exit(1); }"
 
-      # The terminal's VT engine is a downloaded asset, not a tracked file:
-      # the suite exercises it, so it has to land before the tests run.
-      - name: Fetch the terminal's VT engine
-        run: node scripts/fetch-ghostty-vt.mjs
-
       - run: npm test
 
       - name: Fetch koffi's Windows binary

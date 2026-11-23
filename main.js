@@ -42,7 +42,6 @@ const {
   edgeBounds,
 } = require('./lib/layout');
 const { Jumps } = require('./lib/jumps');
-const { Pty, available: ptyAvailable } = require('./lib/pty');
 const { sharedTabs } = require('./lib/shared-tabs');
 
 const BAR_HEIGHT = 44;
@@ -86,32 +85,11 @@ const mapPanes = (node, fn) =>
     : isLeaf(node)
       ? { tab: fn(node.tab) }
       : { orientation: node.orientation, children: node.children.map((child) => mapPanes(child, fn)) };
-// The same arrangement without the panes `drop` names: a pane that goes is
-// the sibling taking its space, as it is when the pane closes.
-const prunePanes = (node, drop) =>
-  !node
-    ? null
-    : isLeaf(node)
-      ? (drop(node.tab) ? null : node)
-      : (() => {
-          const [first, second] = node.children.map((child) => prunePanes(child, drop));
-          if (!first) return second;
-          if (!second) return first;
-          return { orientation: node.orientation, children: [first, second] };
-        })();
 const PARTITION = 'persist:tbrowser';
 // The new-tab page is a local file, not about:blank: Chromium paints a blank
 // document white whatever the theme, so the first thing a launch showed was a
 // white window.
 const HOME = pathToFileURL(path.join(__dirname, 'ui', 'home.html')).href;
-// A terminal is a tab whose page is the terminal, the way HOME is a tab whose
-// page is the new-tab page. The address names what the pane shows; the shell
-// behind it is the pane's own process, gone when the tab is.
-const TERM_URL = 'tbrowser:terminal';
-const TERM_PAGE = pathToFileURL(path.join(__dirname, 'ui', 'term.html')).href;
-// A terminal is the flag, or its address before the view that sets the flag
-// exists: a state file from an earlier build may still name the address.
-const isTerminalTab = (tab) => Boolean(tab?.term || tab?.url === TERM_URL);
 const BLANK = 'about:blank'; // what state files written before the home page hold
 // The window and every view behind a page share one background, so the frames
 // between a window appearing and its page painting are the chrome's color
@@ -319,10 +297,6 @@ let adblockExtension = false; // a blocking extension loaded, so the engine stay
 // Every open window, and the view its keys and clicks arrive from.
 const windows = new Set();
 const viewOwners = new Map(); // webContents.id -> Browser
-// One shell per terminal view, by the webContents that shows it. The shell is
-// the pane's process: it starts when the page asks and dies with the view.
-const terminals = new Map(); // webContents.id -> { pty }
-let ghosttyWasm = null; // the terminal library, read once and handed to each pane
 let remembered = null; // the last window's snapshot, kept while none are open
 let nextWindowId = 1;
 // One counter for every window: a tab is named by its id across the whole
@@ -396,22 +370,7 @@ function watchViewKeys(webContents) {
   webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return;
     const owner = viewOwners.get(webContents.id);
-    if (!owner) return;
-    // A terminal's page is the shell: Ctrl+W, Ctrl+C, Ctrl+R, `:` and the rest
-    // are input to the program, not the browser. Only the key that opened the
-    // terminal stays the browser's, so Alt+T still puts the pane back to a
-    // page.
-    const terminalTab = [...owner.tabs.values()].find(
-      (tab) => tab.view?.webContents === webContents,
-    );
-    if (isTerminalTab(terminalTab)) {
-      if (keys.terminal?.length && matchesAny(input, keys.terminal)) {
-        event.preventDefault();
-        owner.openTerminal();
-      }
-      return;
-    }
-    if (owner.pressShortcut(input)) event.preventDefault();
+    if (owner && owner.pressShortcut(input)) event.preventDefault();
   });
 }
 
@@ -620,26 +579,6 @@ function tabPreferences() {
     // the pool, played its soundtrack out of an empty browser. Sound now waits
     // for a click in the page it comes from, the policy Chrome runs by default.
     autoplayPolicy: 'document-user-activation-required',
-  };
-}
-
-/**
- * A terminal view is the browser's own page, so it gets the same isolation a
- * page gets: sandboxed, context-isolated, and able to reach the window only
- * through the handful of calls its preload exposes.
- */
-function terminalPreferences() {
-  return {
-    partition: PARTITION,
-    sandbox: true,
-    contextIsolation: true,
-    nodeIntegration: false,
-    spellcheck: false,
-    preload: path.join(__dirname, 'ui', 'term-preload.js'),
-    // A shell writing to a pane nobody is looking at is still writing: the
-    // program on the other end must not crawl while the tab is in the
-    // background, and a split's quiet pane must keep up with the one on screen.
-    backgroundThrottling: false,
   };
 }
 
@@ -1200,17 +1139,9 @@ class Browser {
     // The window is going; its tabs are not. Each page is kept as a buffer, so
     // the address that was open here is still open — one search away, already
     // loaded — after the window that showed it is gone. A tab whose renderer
-    // crashed has nothing to keep and is dropped. A terminal is the exception:
-    // its shell is the pane's process and goes with it.
+    // crashed has nothing to keep and is dropped.
     for (const tab of this.tabs.values()) {
-      if (isTerminalTab(tab)) {
-        if (tab.view && !tab.view.webContents.isDestroyed()) {
-          stopTerminal(tab.view.webContents.id);
-          tab.view.webContents.close();
-        }
-      } else if (tab.view && !tab.view.webContents.isDestroyed()) {
-        parkBuffer(this, tab);
-      }
+      if (tab.view && !tab.view.webContents.isDestroyed()) parkBuffer(this, tab);
       this.closeSteps(tab);
     }
     this.tabs.clear();
@@ -1300,9 +1231,6 @@ class Browser {
 
   /** A tab's address, read live when its page still exists. */
   urlOf(tab) {
-    // A terminal's address is what it is, not the page file it loads: a
-    // session that comes back opens a shell, not a copy of the last one.
-    if (tab.term) return TERM_URL;
     // A tab whose renderer is gone has no URL to read, and asking a destroyed
     // webContents throws. The tab's last recorded url still names the page,
     // and this runs while the window closes: a throw here keeps it open.
@@ -1313,16 +1241,11 @@ class Browser {
 
   /** The window as a session: its tabs, the focused one, and the pane tree. */
   sessionState() {
-    // A terminal is not part of a session: it is a pane's own shell, and a
-    // saved list that named it would reopen a shell nobody asked for. Its
-    // leaves are dropped from the arrangement for the same reason.
-    const tabs = [...this.tabs.values()].filter((tab) => !isTerminalTab(tab));
-    const ids = tabs.map((tab) => tab.id);
-    const panes = this.panes ? prunePanes(this.panes, (id) => isTerminalTab(this.tabs.get(id))) : null;
+    const ids = [...this.tabs.keys()];
     return {
-      tabs: tabs.map((tab) => this.urlOf(tab)),
+      tabs: [...this.tabs.values()].map((tab) => this.urlOf(tab)),
       activeTab: Math.max(0, ids.indexOf(this.activeTabId)),
-      panes: panes ? mapPanes(panes, (id) => ids.indexOf(id)) : null,
+      panes: this.panes ? mapPanes(this.panes, (id) => ids.indexOf(id)) : null,
     };
   }
 
@@ -1364,27 +1287,23 @@ class Browser {
     this.sessionSyncing = true;
     try {
       const urls = Array.isArray(state.tabs) ? state.tabs : [];
-      // A terminal is this window's own pane, outside the session: the list it
-      // follows holds pages, so the comparison skips terminals rather than
-      // letting one shift every tab after it.
-      const pages = () => [...this.tabs.values()].filter((tab) => !isTerminalTab(tab));
-      const existing = pages();
+      const ids = [...this.tabs.keys()];
       // A tab the session no longer has: following the session closes it
       // here, and that is not the user closing a tab, so it leaves no buffer.
-      for (let i = urls.length; i < existing.length; i += 1) this.closeTab(existing[i].id, { remember: false });
+      for (let i = urls.length; i < ids.length; i += 1) this.closeTab(ids[i], { remember: false });
       for (let i = 0; i < urls.length; i += 1) {
-        const tab = pages()[i];
-        if (!tab) {
+        const id = [...this.tabs.keys()][i];
+        if (id === undefined) {
           this.createTab({ url: urls[i], activate: false, focus: false });
           continue;
         }
+        const tab = this.tabs.get(id);
         if (this.urlOf(tab) !== urls[i]) this.loadInTab(tab, urls[i]);
       }
       // The arrangement follows the session too: the same panes, each showing
       // the tab in that place.
-      const ids = pages().map((tab) => tab.id);
-      this.refreshPanes(state, ids);
-      const active = ids[state.activeTab];
+      this.refreshPanes(state);
+      const active = [...this.tabs.keys()][state.activeTab];
       if (active !== undefined && active !== this.activeTabId) this.activateTab(active, { focus: false });
     } finally {
       this.sessionSyncing = false;
@@ -1705,57 +1624,6 @@ class Browser {
    * a place to type the next address into, never a second copy of a page that
    * is already on screen.
    */
-  /** Take a tab out of terminal mode, ending the shell it was running. */
-  leaveTerminal(tab) {
-    if (!tab.term) return;
-    if (tab.view && !tab.view.webContents.isDestroyed()) stopTerminal(tab.view.webContents.id);
-    tab.term = false;
-  }
-
-  /**
-   * Alt+T: a shell in the focused pane, in place of the page it shows. The
-   * key toggles: in a terminal it puts a page back in that pane, and a window
-   * that already has a shell brings it to the pane rather than starting a
-   * second one.
-   */
-  openTerminal() {
-    if (!this.win) return;
-    const active = this.activeTab();
-    if (isTerminalTab(active)) {
-      const pages = [...this.tabs.values()].filter((tab) => !isTerminalTab(tab));
-      const shown = this.panes ? new Set(paneTabs(this.panes)) : new Set();
-      const replacement =
-        pages.find((tab) => tab.id === this.previousTabId) ??
-        pages.find((tab) => !shown.has(tab.id)) ??
-        pages[0];
-      if (!replacement) {
-        // The shell is the only tab: open the page first so the window never
-        // closes on the keystroke that ends it.
-        this.createTab({ url: HOME, activate: true });
-        this.closeTab(active.id);
-        return;
-      }
-      if (this.panes && this.inPane(active.id)) {
-        // A split keeps its shape: the page takes the shell's leaf instead of
-        // the pane disappearing.
-        this.panes = replaceTab(this.panes, active.id, replacement.id);
-        this.attachTabView(replacement);
-        this.activeTabId = replacement.id;
-        this.focusPane(replacement.id);
-      } else {
-        this.activateTab(replacement.id);
-      }
-      this.closeTab(active.id);
-      return;
-    }
-    const existing = [...this.tabs.values()].find((tab) => isTerminalTab(tab));
-    if (existing) {
-      this.activateTab(existing.id);
-      return existing;
-    }
-    return this.createTab({ url: TERM_URL, activate: true });
-  }
-
   splitPane(orientation) {
     if (!this.win) return;
     const active = this.activeTab();
@@ -1920,8 +1788,9 @@ class Browser {
    * Follow a saved arrangement: a session's pane tree or this window's own,
    * from either shape the files have ever held.
    */
-  refreshPanes(state, ids = [...this.tabs.keys()]) {
+  refreshPanes(state) {
     if (!this.win) return;
+    const ids = [...this.tabs.keys()];
     const saved = cleanLayout(state, ids.length);
     const wanted = saved ? mapPanes(saved, (index) => ids[index]) : null;
     const shown = wanted ? paneTabs(wanted) : [];
@@ -1961,10 +1830,7 @@ class Browser {
         }
         tab.attached = false;
       }
-      if (!tab.view.webContents.isDestroyed()) {
-        if (isTerminalTab(tab)) stopTerminal(tab.view.webContents.id);
-        tab.view.webContents.close();
-      }
+      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
       this.closeSteps(tab);
     }
     for (const id of [...this.loadBars.keys()]) this.dropLoadBar(id);
@@ -2035,7 +1901,6 @@ class Browser {
   }
 
   titleFor(tab) {
-    if (tab.term) return tab.title || 'Terminal';
     const url = tab.view ? tab.view.webContents.getURL() : tab.url;
     if (!url || url === HOME) return 'New tab';
     try {
@@ -2058,9 +1923,6 @@ class Browser {
     const url = parseInput(raw, config.searchUrl);
     const tab = this.activeTab();
     if (!url || !tab) return;
-    // A terminal that is sent to a page stops being a terminal: the shell is
-    // ended here rather than left running behind a page nobody sees.
-    if (tab.term) this.leaveTerminal(tab);
     // Opening a favourite swaps in the page that was kept ready: already
     // loaded, so it is on screen at once. A tab with an address of its own
     // hands the page it was showing to the back step below, so the swap costs
@@ -2485,9 +2347,6 @@ class Browser {
    * the window that takes it next does not hear about a tab that is gone.
    */
   unwireTab(wc) {
-    // A view leaving the tab that ran it takes its shell with it: no path
-    // hands a terminal to the pool, and one that ever did must not leak it.
-    stopTerminal(wc.id);
     for (const event of [
       'page-title-updated',
       'did-navigate',
@@ -2606,15 +2465,6 @@ class Browser {
 
   /** Create a tab's renderer on first use; a restored tab costs nothing until then. */
   tabView(tab) {
-    // A terminal tab is recognised by its address before it has a view: the
-    // flag is set when the view is built, and the address never changes.
-    if (tab.term || tab.url === TERM_URL) {
-      if (tab.view) {
-        this.applyZoom(tab);
-        return tab.view;
-      }
-      return this.terminalView(tab);
-    }
     if (tab.view) {
       // A tab coming back to a pane keeps the factor it was left at; putting
       // it on the view again also undoes anything Chromium's own zoom did.
@@ -2648,30 +2498,6 @@ class Browser {
     wc.once('dom-ready', () => mark('tab dom-ready'));
     wc.once('did-finish-load', () => mark('tab painted'));
     wc.loadURL(tab.url || HOME).catch(() => {});
-    return view;
-  }
-
-  /**
-   * The view a terminal tab shows.
-   *
-   * A terminal is a tab whose page is the terminal itself, so opening one is
-   * the same verb as opening any tab: in a split it takes the focused pane,
-   * and the page that pane was showing stays in the list behind it.
-   */
-  terminalView(tab) {
-    const view = newView(terminalPreferences(), '#24273a');
-    tab.view = view;
-    tab.term = true;
-    tab.title = tab.title || 'Terminal';
-    track(this, view);
-    const wc = view.webContents;
-    wc.once('destroyed', () => stopTerminal(wc.id));
-    // Clicking a terminal in a split is how the pane's keys move to it.
-    wc.on('focus', () => {
-      if (this.inPane(tab.id) && tab.id !== this.activeTabId) this.focusPane(tab.id, { focus: false });
-    });
-    this.watchKeys(wc);
-    wc.loadURL(TERM_PAGE).catch(() => {});
     return view;
   }
 
@@ -2750,9 +2576,6 @@ class Browser {
   closeTab(id, { remember = true } = {}) {
     const tab = this.tabs.get(id);
     if (!tab) return;
-    // A shell is not a page to come back to: closing the pane's terminal ends
-    // it, and the address it was left at would open a different one.
-    if (isTerminalTab(tab)) remember = false;
     const order = [...this.tabs.keys()];
     const place = order.indexOf(id);
     const wasPane = this.inPane(id);
@@ -2775,8 +2598,6 @@ class Browser {
       // destroyed webContents throws — which used to stop the close below.
       const wc = tab.view.webContents;
       if (!wc.isDestroyed()) {
-        // A shell is the pane's process: it dies with the tab, not after it.
-        if (isTerminalTab(tab)) stopTerminal(wc.id);
         // An empty tab was the splash: closing it hands the painted page back to
         // the pool for the next ctrl+t, so it never pays for another renderer.
         if (wc.getURL() === HOME && freeTabs.length < WARM_TABS) {
@@ -2938,10 +2759,6 @@ class Browser {
     }
     if (matchesAny(input, keys.splitHorizontal)) {
       this.splitPane('horizontal');
-      return true;
-    }
-    if (keys.terminal?.length && matchesAny(input, keys.terminal)) {
-      this.openTerminal();
       return true;
     }
     // Alt+H/J/K/L move to the pane that way, the way they move between tmux
@@ -3351,13 +3168,6 @@ function windowOfTab(id) {
 function parkBuffer(window, tab) {
   const view = tab.view;
   if (!view || view.webContents.isDestroyed()) return;
-  // A shell is not a page to come back to: parking it would keep a process
-  // alive behind a row, so it is ended and its view closed instead.
-  if (isTerminalTab(tab)) {
-    stopTerminal(view.webContents.id);
-    view.webContents.close();
-    return;
-  }
   const url = window.urlOf(tab);
   const title = tab.title || window.titleFor(tab);
   window.unwireTab(view.webContents);
@@ -3408,8 +3218,6 @@ function bufferFor(url) {
  * an empty tab is not worth a row here.
  */
 function rememberBuffer(window, tab) {
-  // A terminal has no address to come back to: the row would open a shell.
-  if (isTerminalTab(tab)) return;
   const url = window.urlOf(tab);
   if (!url || url === HOME) return;
   if (bufferFor(url)) return;
@@ -3494,13 +3302,7 @@ function copyTabHere(id, target) {
 
 function createWindow(snapshot = {}) {
   const window = new Browser(snapshot);
-  return window
-    .open()
-    .then((value) => {
-      // The throwaway harness a ticket's verification runs under `--no-ui`.
-      return value;
-    })
-    .catch((err) => {
+  return window.open().catch((err) => {
     // A window that never finished building has no tabs and half its chrome.
     // Left in `windows` it answers every later show request with a focus on a
     // skeleton, so the browser can never be opened again: drop it outright.
@@ -3932,142 +3734,6 @@ ipcMain.on('page:copy-url', (event, url) => {
   const page = event.sender.getURL();
   if (!page) return;
   clipboard.writeText(typeof url === 'string' && url === page ? url : page);
-});
-
-// --------------------------------------------------------------- terminal
-//
-// The terminal itself lives in the pane: libghostty-vt in WebAssembly, a canvas
-// beside it. What crosses this boundary is only what has to — the bytes the
-// shell wrote, the bytes a key typed, the size of the pane, the clipboard.
-
-/** End the shell behind a terminal view, if it has one. */
-function stopTerminal(id) {
-  const session = terminals.get(id);
-  if (!session) return;
-  terminals.delete(id);
-  try {
-    session.pty.kill();
-  } catch {
-    // the console is already gone with the process
-  }
-}
-
-/** The library the terminal page runs, read once and kept. */
-function readGhostty() {
-  if (ghosttyWasm) return ghosttyWasm;
-  ghosttyWasm = fs.readFileSync(path.join(__dirname, 'vendor', 'libghostty-vt', 'ghostty-vt.wasm'));
-  return ghosttyWasm;
-}
-
-ipcMain.handle('term:wasm', () => readGhostty());
-
-/**
- * The colour a terminal's own background is painted in: whatever the window's
- * surface uses, so the pane is the same material as the splash and the chrome.
- * With the acrylic brush painting the window, that is nothing at all.
- */
-function terminalSurface() {
-  const surface = surfaceBg();
-  if (surface === '#00000000') return 'transparent';
-  const match = /^#([0-9a-f]{2})([0-9a-f]{6})$/i.exec(surface);
-  if (!match) return surface;
-  const alpha = parseInt(match[1], 16) / 255;
-  const value = match[2];
-  return `rgba(${parseInt(value.slice(0, 2), 16)}, ${parseInt(value.slice(2, 4), 16)}, ${parseInt(value.slice(4, 6), 16)}, ${alpha})`;
-}
-
-ipcMain.handle('term:start', (event, size) => {
-  const id = event.sender.id;
-  const running = terminals.get(id);
-  if (running) return { cols: running.pty.cols, rows: running.pty.rows };
-  if (!ptyAvailable()) return { error: 'the terminal needs Windows' };
-  const cols = Math.max(2, Math.min(1000, Number(size?.cols) || 80));
-  const rows = Math.max(1, Math.min(500, Number(size?.rows) || 24));
-  try {
-    let pty;
-    // One report per shell: a worker error and an exit can race, and the pane
-    // must hear one ending, not two.
-    let reported = false;
-    const report = (channel, message) => {
-      if (reported) return;
-      reported = true;
-      if (!event.sender.isDestroyed()) event.sender.send(channel, message);
-    };
-    pty = new Pty({
-      cols,
-      rows,
-      command: process.env.TBROWSER_TERMINAL_COMMAND || 'wsl.exe',
-      onData: (bytes) => {
-        if (!event.sender.isDestroyed()) event.sender.send('term:data', bytes);
-      },
-      onExit: (code) => {
-        const said = pty.wrote;
-        stopTerminal(id);
-        // A shell that never said a word and died on a loader error never
-        // started at all. Say which one: a blank pane is not an answer. The
-        // pane stays up so the line is readable.
-        if (!said && code) {
-          report('term:error', `the shell could not start (exit 0x${code.toString(16)})`);
-          return;
-        }
-        report('term:exit');
-        // A shell that ran and is gone leaves a dead pane: the tab goes with
-        // it, the way Windows Terminal closes the tab the program ran in.
-        const owner = viewOwners.get(id);
-        const tab = owner && [...owner.tabs.values()].find((entry) => entry.view?.webContents?.id === id);
-        if (owner && tab) owner.closeTab(tab.id);
-      },
-    });
-    // A worker that could not start the console at all reports here: the pane
-    // gets the line instead of staying blank, and the dead session goes.
-    pty.onError = (message) => {
-      stopTerminal(id);
-      // A failed session marks itself ended before reporting, so its own
-      // kill() has nothing left to do; the console itself is closed here so a
-      // shell that failed cannot outlive the pane.
-      try {
-        pty.pty?.kill();
-      } catch {
-        // the console is already gone with the shell
-      }
-      report('term:error', message);
-    };
-    terminals.set(id, { pty });
-    return { cols: pty.cols, rows: pty.rows, background: terminalSurface() };
-  } catch (err) {
-    console.warn(`[tbrowser] terminal: ${err.stack ?? err.message}`);
-    return { error: err.message };
-  }
-});
-
-ipcMain.on('term:input', (event, bytes) => {
-  const session = terminals.get(event.sender.id);
-  if (!session) return;
-  session.pty.write(Buffer.from(bytes));
-});
-
-ipcMain.on('term:resize', (event, size) => {
-  const session = terminals.get(event.sender.id);
-  if (!session) return;
-  session.pty.resize(Math.max(2, Number(size?.cols) || 80), Math.max(1, Number(size?.rows) || 24));
-});
-
-ipcMain.on('term:copy', (event, text) => {
-  if (typeof text !== 'string' || !text) return;
-  clipboard.writeText(text);
-});
-
-ipcMain.handle('term:paste', () => clipboard.readText());
-
-ipcMain.on('term:title', (event, title) => {
-  if (typeof title !== 'string') return;
-  const owner = viewOwners.get(event.sender.id);
-  if (!owner) return;
-  const tab = [...owner.tabs.values()].find((entry) => entry.view?.webContents?.id === event.sender.id);
-  if (!tab) return;
-  tab.title = title.trim() || 'Terminal';
-  if (tab.id === owner.activeTabId && owner.win) owner.win.setTitle(`${tab.title} — tbrowser`);
-  updateSidebars();
 });
 
 ipcMain.on('sidebar:action', (event, action) => {

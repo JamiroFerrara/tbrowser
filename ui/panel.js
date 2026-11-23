@@ -30,7 +30,6 @@ const ACTION_LABELS = {
   splitVertical: 'Split side by side',
   splitHorizontal: 'Split stacked',
   focusPane: 'Move between panes',
-  terminal: 'Terminal in this pane',
   devtools: 'Developer tools',
   newWindow: 'New window',
   closeWindow: 'Close window',
