@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Terminal</title>
+    <style>
+      /* The page is the terminal: no margin, no scrollbar, and a background
+         that is the terminal's own colour so the first paint is never white. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        /* Nothing painted here: the view behind the page carries the window's
+           material, and the canvas tints it where the terminal wants a colour. */
+        background: transparent;
+      }
+      #screen {
+        display: block;
+        outline: none;
+      }
+      /* The bell: a flash at the edge, the way a terminal without a speaker
+         says the program wanted attention. */
+      body.bell::after {
+        content: '';
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        border: 2px solid #f5a97f;
+        opacity: 0;
+        animation: bell 220ms ease-out;
+      }
+      @keyframes bell {
+        from {
+          opacity: 1;
+        }
+        to {
+          opacity: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="screen" tabindex="0"></canvas>
+    <script src="ghostty-vt.js"></script>
+    <script src="term.js"></script>
+  </body>
+</html>

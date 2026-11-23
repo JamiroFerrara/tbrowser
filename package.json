@@ -17,7 +17,7 @@
     "fetch:vt": "node scripts/fetch-ghostty-vt.mjs",
     "test": "node --test",
     "add-ext": "node scripts/install-extension.mjs",
-    "pack:win": "node scripts/fetch-koffi-win.mjs && node scripts/fetch-ghostty-vt.mjs && electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --asar.unpack=\"**/*.node\" --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\" --ignore=\"^/\\.tmp-\"",
+    "pack:win": "node scripts/fetch-koffi-win.mjs && node scripts/fetch-ghostty-vt.mjs && electron-packager . tbrowser --platform=win32 --arch=x64 --out=dist --overwrite --asar.unpackDir=vendor --asar.unpack=\"{**/*.node,**/node_modules/node-pty/**}\" --ignore=\"^/test\" --ignore=\"^/dist\" --ignore=\"^/\\.git\" --ignore=\"^/\\.tmp-\"",
     "pack:win:installer": "node scripts/fetch-koffi-win.mjs && node scripts/fetch-ghostty-vt.mjs && electron-builder --win",
     "pack:linux": "node scripts/fetch-ghostty-vt.mjs && electron-builder --linux",
     "pack:mac": "node scripts/fetch-ghostty-vt.mjs && electron-builder --mac"
@@ -39,7 +39,8 @@
     ],
     "asarUnpack": [
       "vendor/**/*",
-      "**/*.node"
+      "**/*.node",
+      "**/node_modules/node-pty/**"
     ],
     "npmRebuild": false,
     "win": {
@@ -105,7 +106,8 @@
   },
   "dependencies": {
     "@ghostery/adblocker-electron": "^2.20.3",
-    "koffi": "^3.3.7"
+    "koffi": "^3.3.7",
+    "node-pty": "^1.1.0"
   },
   "optionalDependencies": {
     "@koromix/koffi-win32-x64": "^3.3.7"
